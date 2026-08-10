@@ -272,6 +272,33 @@ function graphRevisionFingerprint(api: CodefyUIPluginAPI): string {
   return JSON.stringify({ nodes: graph.nodes, edges: graph.edges, presets: graph.presets ?? [] });
 }
 
+/** Execution-relevant graph identity: node ids/types/params, edge wiring, and
+ * presets — deliberately excluding positions and note nodes. The run-approval
+ * guard compares this, so cosmetic drift (auto-layout animations settling
+ * while the approval card is open) cannot void an approval, while any change
+ * that alters what would execute still does. */
+export function graphSemanticFingerprint(api: CodefyUIPluginAPI): string {
+  const graph = api.graph.getGraph();
+  const nodes = graph.nodes
+    .filter((node) => node.type !== 'note')
+    .map((node) => ({
+      id: node.id,
+      type: node.type ?? '',
+      params: node.data?.params ?? {},
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const edges = graph.edges
+    .map((edge) => ({
+      source: edge.source ?? '',
+      sourceHandle: edge.sourceHandle ?? '',
+      target: edge.target ?? '',
+      targetHandle: edge.targetHandle ?? '',
+      type: edge.type ?? '',
+    }))
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return JSON.stringify({ nodes, edges, presets: graph.presets ?? [] });
+}
+
 function approvalValue(value: unknown): string {
   if (typeof value === 'string') return JSON.stringify(value);
   const encoded = JSON.stringify(value);
@@ -706,20 +733,15 @@ async function executeTool(
       });
     }
 
-    // Approval uses the same graph-stability guard as experiments: what the
-    // user approves must be exactly what runs.
-    let approvalGraphChanged = false;
-    let stopApprovalWatch: (() => void) | undefined;
-    try {
-      stopApprovalWatch = api.graph.onGraphChanged(() => { approvalGraphChanged = true; });
-    } catch (error) {
-      return JSON.stringify({ error: `Cannot safely watch the graph during approval: ${String(error)}` });
-    }
+    // Approval guard: what the user approves must be what runs. The
+    // comparison is the SEMANTIC fingerprint (ids/types/params/wiring), so a
+    // cosmetic position drift — e.g. an auto-layout animation settling while
+    // the approval card is open — cannot void an approval, while any change
+    // to what would execute still does.
     let approvalFingerprint: string;
     try {
-      approvalFingerprint = graphRevisionFingerprint(api);
+      approvalFingerprint = graphSemanticFingerprint(api);
     } catch (error) {
-      stopApprovalWatch();
       return JSON.stringify({ error: `Cannot capture the graph before approval: ${String(error)}` });
     }
     let approved: boolean;
@@ -741,8 +763,6 @@ async function executeTool(
         return JSON.stringify({ cancelled: true, error: 'Run cancelled before execution.' });
       }
       return JSON.stringify({ error: `Run approval failed: ${String(error)}` });
-    } finally {
-      stopApprovalWatch();
     }
     if (!approved) {
       return JSON.stringify({ cancelled: true, error: 'The run was not approved by the user.' });
@@ -752,11 +772,11 @@ async function executeTool(
     }
     let fingerprintChanged: boolean;
     try {
-      fingerprintChanged = graphRevisionFingerprint(api) !== approvalFingerprint;
+      fingerprintChanged = graphSemanticFingerprint(api) !== approvalFingerprint;
     } catch (error) {
       return JSON.stringify({ error: `Cannot re-check the graph after approval: ${String(error)}` });
     }
-    if (approvalGraphChanged || fingerprintChanged) {
+    if (fingerprintChanged) {
       return JSON.stringify({
         cancelled: true,
         replan: true,

@@ -1922,17 +1922,15 @@ describe('run_graph tool', () => {
     expect(String(parsed.error)).toContain('interactive user confirmation');
   });
 
-  it('asks for a replan when the graph changes while approval is open', async () => {
+  it('asks for a replan when the graph changes semantically during approval', async () => {
     scriptOneRun();
     const api = makeFakeApi();
-    let graphChanged: () => void = () => {};
-    (api.graph.onGraphChanged as Mock).mockImplementation((cb: () => void) => {
-      graphChanged = cb;
-      return () => {};
-    });
     const state = makeCallbacks();
     state.cbs.onRunApproval = async () => {
-      graphChanged();
+      (api.graph.getGraph as Mock).mockReturnValue({
+        nodes: [{ id: 'n0', type: 'Conv2d', data: { params: { channels: 4 } } }],
+        edges: [],
+      });
       return true;
     };
 
@@ -1942,6 +1940,29 @@ describe('run_graph tool', () => {
     const parsed = toolResult(state);
     expect(parsed.cancelled).toBe(true);
     expect(parsed.replan).toBe(true);
+  });
+
+  it('ignores cosmetic position drift during approval and still runs', async () => {
+    scriptOneRun();
+    const api = makeFakeApi();
+    (api.graph.getGraph as Mock).mockReturnValue({
+      nodes: [{ id: 'n0', type: 'Conv2d', position: { x: 0, y: 0 } }],
+      edges: [],
+    });
+    const state = makeCallbacks();
+    state.cbs.onRunApproval = async () => {
+      // Auto-layout settles while the approval card is open: positions move,
+      // nothing execution-relevant changes.
+      (api.graph.getGraph as Mock).mockReturnValue({
+        nodes: [{ id: 'n0', type: 'Conv2d', position: { x: 500, y: 300 } }],
+        edges: [],
+      });
+      return true;
+    };
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    expect(runLiveGraph).toHaveBeenCalledTimes(1);
   });
 
   it('releases the single-flight guard after a run completes', async () => {
