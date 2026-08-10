@@ -1361,6 +1361,12 @@
   min-width: 0;
 }
 
+.gcp-run-sparkline {
+  flex: none;
+  color: var(--gcp-accent);
+  opacity: 0.9;
+}
+
 .gcp-runbar-step {
   flex-shrink: 0;
   padding: 1px 6px;

@@ -73,7 +73,7 @@ Graph 隔離只保證候選 GraphOps 不會改動畫布，並不是通用 sandbo
 
 1. 先通過 server-side validation；
 2. 使用者在 approval card 確認（節點／邊數、node types、時間上限、副作用警告），並套用與實驗核准相同的 concurrent-edit guard；
-3. 圖經 `/ws/execution` 執行；node status 與 live training progress（loss、epoch）串流到面板的狀態列；
+3. 圖經 `/ws/execution` 執行；node status 與 live training progress（loss、epoch）串流到面板的狀態列，並依串流的 progress frame 即時繪出 loss sparkline；
 4. tool 回傳精簡結果：final status、per-node scalar/string output summary、最後 progress 值、`metric` 序列尾值、log text tail 與 per-node error。
 
 長時間訓練是預期情境：一次一個 run、預設 6 小時 wall-clock 上限（最高可調至 12 小時），可用面板 Stop 取消。兩代 host 的 run ownership 不同 — 現行 CodefyUI `main` 的 run 由 server 持有（關閉 socket **不會**停止，必須送 `cancel` action），1.3.0 則由 socket 持有（關閉即取消）。因此取消時會先送 `{action: "cancel"}` 再關 socket，兩代都能停止。頁面重載後 re-attach 尚未實作；在現行 host 上 run 本身仍會繼續，事件可經 host 的 run API 查詢。
