@@ -1,0 +1,338 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { CodefyUIPluginAPI, SerializedGraph } from '../types/codefyui';
+import {
+  DEFAULT_RUN_TIMEOUT_MINUTES,
+  MAX_RUN_TIMEOUT_MINUTES,
+  formatRunStatusLine,
+  runLiveGraph,
+} from './runGraph';
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const GRAPH: SerializedGraph = {
+  nodes: [
+    { id: 'start', type: 'Start', position: { x: 0, y: 0 }, data: { params: {} } },
+    { id: 'loop', type: 'TrainingLoop', position: { x: 100, y: 0 }, data: { params: {} } },
+    { id: 'gen', type: 'TextGenerate', position: { x: 200, y: 0 }, data: { params: {} } },
+    { id: 'note', type: 'note', position: { x: 0, y: 100 }, data: {} },
+  ],
+  edges: [
+    { id: 'e1', source: 'start', target: 'loop', sourceHandle: 'trigger', targetHandle: '__trigger', type: 'trigger' },
+    { id: 'e2', source: 'note', target: 'loop', sourceHandle: '', targetHandle: '' },
+  ],
+  presets: [],
+};
+
+type SocketBehavior = (socket: MockWebSocket, payload: Record<string, unknown>) => void;
+let socketBehavior: SocketBehavior;
+let sentPayloads: Record<string, unknown>[];
+
+class MockWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 3;
+  static instances: MockWebSocket[] = [];
+
+  readyState = MockWebSocket.CONNECTING;
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+
+  constructor(public url: string) {
+    MockWebSocket.instances.push(this);
+    queueMicrotask(() => {
+      if (this.readyState !== MockWebSocket.CONNECTING) return;
+      this.readyState = MockWebSocket.OPEN;
+      this.onopen?.(new Event('open'));
+    });
+  }
+
+  send(raw: string) {
+    const payload = JSON.parse(raw) as Record<string, unknown>;
+    sentPayloads.push(payload);
+    socketBehavior(this, payload);
+  }
+
+  close() {
+    this.readyState = MockWebSocket.CLOSED;
+  }
+
+  emit(value: unknown) {
+    this.onmessage?.({ data: JSON.stringify(value) } as MessageEvent);
+  }
+
+  fail() {
+    this.onerror?.(new Event('error'));
+  }
+}
+
+function fakeApi(): CodefyUIPluginAPI {
+  return {
+    apiVersion: 1,
+    pluginId: 'graph-copilot',
+    ui: { addFloatingWidget: vi.fn(), toast: vi.fn() },
+    graph: {
+      getGraph: vi.fn(() => structuredClone(GRAPH)),
+      getNodeDefinitions: vi.fn(() => []),
+      applyOperations: vi.fn(),
+      onGraphChanged: vi.fn(() => () => {}),
+    },
+    http: {
+      fetch: vi.fn(async (url: string) => {
+        if (url === '/api/auth/bootstrap') {
+          return { ok: true, status: 200, json: async () => ({ token: 'token-123' }) };
+        }
+        throw new Error(`unexpected URL ${url}`);
+      }),
+    },
+    storage: { get: vi.fn(), set: vi.fn(), remove: vi.fn() },
+  } as unknown as CodefyUIPluginAPI;
+}
+
+async function flushMicrotasks(times = 6): Promise<void> {
+  for (let i = 0; i < times; i++) await Promise.resolve();
+}
+
+beforeEach(() => {
+  sentPayloads = [];
+  MockWebSocket.instances = [];
+  socketBehavior = () => {};
+  vi.stubGlobal('WebSocket', MockWebSocket);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+// ---------------------------------------------------------------------------
+// runLiveGraph
+// ---------------------------------------------------------------------------
+
+describe('runLiveGraph', () => {
+  it('executes the live graph (notes stripped) and collects outputs, progress, metrics', async () => {
+    socketBehavior = (socket, payload) => {
+      expect(payload.action).toBe('execute');
+      queueMicrotask(() => {
+        socket.emit({ type: 'execution_start', run_id: 'run-9' });
+        socket.emit({
+          type: 'node_status', node_id: 'loop', status: 'progress', run_id: 'run-9',
+          outputs: [{ output_kind: 'progress', progress: { event: 'batch', epoch: 1, loss: 2.75 } }],
+        });
+        socket.emit({
+          type: 'node_status', node_id: 'loop', status: 'completed', run_id: 'run-9',
+          outputs: [{
+            output_kind: 'tensor_summary',
+            tensor_summary: {
+              model: { type: 'model', class: 'GraphModelModule', params: 1000, trainable: 900 },
+              metrics: { type: 'scalar', value: 0.5 },
+            },
+          }],
+        });
+        socket.emit({
+          type: 'node_status', node_id: 'gen', status: 'completed', run_id: 'run-9',
+          outputs: [{
+            output_kind: 'tensor_summary',
+            tensor_summary: { text: { type: 'string', value: 'Once upon a time' } },
+          }],
+        });
+        socket.emit({
+          type: 'metric', run_id: 'run-9',
+          points: [
+            { name: 'loop/loss', value: 2.1, step: 10, node_id: 'loop' },
+            { name: 'loop/loss', value: 1.9, step: 20, node_id: 'loop' },
+          ],
+        });
+        socket.emit({ type: 'execution_complete', run_id: 'run-9' });
+      });
+    };
+
+    const updates: string[] = [];
+    const outcome = await runLiveGraph(fakeApi(), {
+      timeoutMs: 60_000,
+      onProgress: (update) => updates.push(update.phase),
+    });
+
+    expect(outcome.status).toBe('complete');
+    expect(outcome.runId).toBe('run-9');
+    expect(outcome.totalNodes).toBe(3); // note filtered
+    expect(outcome.completedNodes).toBe(2);
+    expect(outcome.outputs['TrainingLoop.metrics']).toBe(0.5);
+    expect(outcome.outputs['TrainingLoop.model.params']).toBe(900);
+    expect(outcome.outputs['TextGenerate.text']).toBe('Once upon a time');
+    expect(outcome.finalProgress['TrainingLoop.loss']).toBe(2.75);
+    expect(outcome.finalProgress['TrainingLoop.epoch']).toBe(1);
+    expect(outcome.finalProgress['TrainingLoop.event']).toBe('batch');
+    expect(outcome.metrics['loop/loss']).toBe(1.9);
+    expect(updates[0]).toBe('connecting');
+    expect(updates).toContain('running');
+
+    const execute = sentPayloads[0];
+    expect(execute.record_outputs).toBe(false);
+    expect(execute.weights_persistent).toBe(true);
+    expect((execute.nodes as unknown[]).length).toBe(3);
+  });
+
+  it('collects legacy 1.3.0 output_summary / progress message fields', async () => {
+    socketBehavior = (socket) => {
+      queueMicrotask(() => {
+        socket.emit({
+          type: 'node_status', node_id: 'loop', status: 'progress',
+          progress: { epoch: 3, loss: 1.25 },
+        });
+        socket.emit({
+          type: 'node_status', node_id: 'loop', status: 'completed',
+          output_summary: { metrics: { type: 'scalar', value: 0.9 } },
+        });
+        socket.emit({ type: 'execution_complete' });
+      });
+    };
+
+    const outcome = await runLiveGraph(fakeApi(), { timeoutMs: 60_000 });
+    expect(outcome.status).toBe('complete');
+    expect(outcome.outputs['TrainingLoop.metrics']).toBe(0.9);
+    expect(outcome.finalProgress['TrainingLoop.loss']).toBe(1.25);
+  });
+
+  it('reports node errors and scrubs the execution credential from messages', async () => {
+    socketBehavior = (socket) => {
+      queueMicrotask(() => {
+        socket.emit({
+          type: 'node_status', node_id: 'loop', status: 'error',
+          error: 'CUDA exploded near token-123',
+        });
+        socket.emit({ type: 'execution_error', error: 'run failed with token-123' });
+      });
+    };
+
+    const outcome = await runLiveGraph(fakeApi(), { timeoutMs: 60_000 });
+    expect(outcome.status).toBe('error');
+    expect(outcome.error).toBe('run failed with [REDACTED]');
+    expect(outcome.nodeErrors.TrainingLoop).toBe('CUDA exploded near [REDACTED]');
+  });
+
+  it('treats a rejected execute as an error', async () => {
+    socketBehavior = (socket) => {
+      queueMicrotask(() => {
+        socket.emit({ type: 'error', rejected: true, error: 'another run is active' });
+      });
+    };
+    const outcome = await runLiveGraph(fakeApi(), { timeoutMs: 60_000 });
+    expect(outcome.status).toBe('error');
+    expect(outcome.error).toContain('another run is active');
+  });
+
+  it('cancels via the cancel action when the signal aborts', async () => {
+    let socketRef: MockWebSocket | null = null;
+    socketBehavior = (socket, payload) => {
+      socketRef = socket;
+      if (payload.action === 'execute') {
+        queueMicrotask(() => {
+          socket.emit({ type: 'execution_start', run_id: 'run-c' });
+        });
+      }
+      if (payload.action === 'cancel') {
+        expect(payload.run_id).toBe('run-c');
+        queueMicrotask(() => {
+          socket.emit({ type: 'execution_stopped', reason: 'cancelled', run_id: 'run-c' });
+        });
+      }
+    };
+
+    const controller = new AbortController();
+    const pending = runLiveGraph(fakeApi(), {
+      signal: controller.signal,
+      timeoutMs: 60_000,
+    });
+    await flushMicrotasks();
+    controller.abort();
+    const outcome = await pending;
+
+    expect(outcome.status).toBe('cancelled');
+    expect(sentPayloads.some((p) => p.action === 'cancel')).toBe(true);
+    expect(socketRef!.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it('times out a silent run: sends cancel, then resolves as timeout', async () => {
+    vi.useFakeTimers();
+    socketBehavior = (socket, payload) => {
+      if (payload.action === 'execute') {
+        queueMicrotask(() => {
+          socket.emit({ type: 'execution_start', run_id: 'run-t' });
+        });
+      }
+      // cancel is swallowed — host never answers.
+    };
+
+    const pending = runLiveGraph(fakeApi(), { timeoutMs: 10_000 });
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(10_000); // fire the run timeout -> cancel
+    expect(sentPayloads.some((p) => p.action === 'cancel')).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_000); // cancel grace expires
+    const outcome = await pending;
+
+    expect(outcome.status).toBe('timeout');
+    expect(outcome.error).toContain('timed out');
+  });
+
+  it('resolves cancelled when the socket closes before completion after abort', async () => {
+    socketBehavior = (socket, payload) => {
+      if (payload.action === 'execute') {
+        queueMicrotask(() => socket.emit({ type: 'execution_start', run_id: 'run-x' }));
+      }
+    };
+    const controller = new AbortController();
+    const pending = runLiveGraph(fakeApi(), { signal: controller.signal, timeoutMs: 60_000 });
+    await flushMicrotasks();
+    controller.abort();
+    // Host never confirms; force the close handler (1.3.0 behavior).
+    const socket = MockWebSocket.instances[0];
+    socket.onclose?.(new CloseEvent('close'));
+    const outcome = await pending;
+    expect(outcome.status).toBe('cancelled');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatRunStatusLine
+// ---------------------------------------------------------------------------
+
+describe('formatRunStatusLine', () => {
+  it('names the phases', () => {
+    expect(formatRunStatusLine({ phase: 'connecting', elapsedMs: 0, completedNodes: 0, totalNodes: 3 }))
+      .toBe('Starting graph run…');
+    expect(formatRunStatusLine({ phase: 'cancelling', elapsedMs: 5, completedNodes: 1, totalNodes: 3 }))
+      .toBe('Cancelling run…');
+  });
+
+  it('prefers training fields and formats numbers compactly', () => {
+    const line = formatRunStatusLine({
+      phase: 'running',
+      nodeType: 'TrainingLoop',
+      progress: { event: 'batch', epoch: 2, loss: 1.234567, other: 9 },
+      elapsedMs: 1000,
+      completedNodes: 1,
+      totalNodes: 4,
+    });
+    expect(line).toBe('Running graph 1/4 · TrainingLoop · epoch 2 · loss 1.2346');
+  });
+
+  it('falls back to the first numeric fields when no known names match', () => {
+    const line = formatRunStatusLine({
+      phase: 'running',
+      nodeType: 'PerplexityEvaluate',
+      progress: { event: 'eval', batches: 12, done: 0.5 },
+      elapsedMs: 1000,
+      completedNodes: 2,
+      totalNodes: 4,
+    });
+    expect(line).toBe('Running graph 2/4 · PerplexityEvaluate · batches 12 · done 0.5000');
+  });
+
+  it('constants stay in sane bounds', () => {
+    expect(DEFAULT_RUN_TIMEOUT_MINUTES).toBeLessThanOrEqual(MAX_RUN_TIMEOUT_MINUTES);
+  });
+});

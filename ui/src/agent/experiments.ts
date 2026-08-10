@@ -14,6 +14,7 @@ import { compareToBaseline, studentTCI95 } from './experimentAnalysis';
 import { redactToolResultForContext } from './historyRedaction';
 import { createPortableStudyCapture } from './studyCapture';
 import { saveStudyBundle, StudyStorageError, withRequiredWebLock } from './studyStorage';
+import { normalizeNodeStatus } from './wireOutputs';
 
 export const EXPERIMENTS_STORAGE_KEY = 'experiment-sessions-v1';
 export const EXPERIMENTS_CHANGED_EVENT = 'gcp:experiments-changed';
@@ -242,7 +243,7 @@ function graphFingerprint(graph: SerializedGraph): string {
   });
 }
 
-function executableGraph(graph: SerializedGraph): SerializedGraph {
+export function executableGraph(graph: SerializedGraph): SerializedGraph {
   const nodes = graph.nodes.filter((node) => node.type !== 'note');
   const ids = new Set(nodes.map((node) => node.id));
   return {
@@ -512,7 +513,7 @@ async function validateCandidate(
   }
 }
 
-async function executionToken(api: CodefyUIPluginAPI, signal?: AbortSignal): Promise<string> {
+export async function executionToken(api: CodefyUIPluginAPI, signal?: AbortSignal): Promise<string> {
   const response = await api.http.fetch('/api/auth/bootstrap', { signal });
   if (!response.ok) throw new Error(`Execution auth bootstrap failed: HTTP ${response.status}`);
   const body = await response.json() as { token?: unknown };
@@ -522,14 +523,14 @@ async function executionToken(api: CodefyUIPluginAPI, signal?: AbortSignal): Pro
   return body.token;
 }
 
-function executionUrl(token: string): string {
+export function executionUrl(token: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`${protocol}//${window.location.host}/ws/execution`);
   url.searchParams.set('token', token);
   return url.toString();
 }
 
-function scrubExecutionCredential(message: string, token: string): string {
+export function scrubExecutionCredential(message: string, token: string): string {
   let scrubbed = message;
   const representations = [...new Set([token, encodeURIComponent(token)])]
     .filter((value) => value.length > 0)
@@ -541,20 +542,16 @@ function scrubExecutionCredential(message: string, token: string): string {
 function collectSummaryMetrics(
   graph: SerializedGraph,
   nodeId: string,
-  summary: unknown,
+  summaryScalars: Record<string, number>,
   metrics: Record<string, number>,
   identities: Record<string, string>,
   sources: Record<string, 'output_summary' | 'progress' | 'client'>,
 ): void {
-  if (!summary || typeof summary !== 'object') return;
   const node = graph.nodes.find((item) => item.id === nodeId);
   const sameTypeCount = node
     ? graph.nodes.filter((item) => item.type === node.type).length
     : 0;
-  for (const [port, raw] of Object.entries(summary as Record<string, unknown>)) {
-    if (!raw || typeof raw !== 'object') continue;
-    const value = finiteNumber((raw as Record<string, unknown>).value);
-    if (value === undefined) continue;
+  for (const [port, value] of Object.entries(summaryScalars)) {
     const nodeKey = `${nodeId}.${port}`;
     const canonicalKey = node?.type && sameTypeCount === 1 ? `${node.type}.${port}` : nodeKey;
     metrics[nodeKey] = value;
@@ -674,8 +671,13 @@ export function executeCandidateGraph(
       const type = String(message.type ?? '');
       if (type === 'node_status') {
         const nodeId = String(message.node_id ?? '');
-        collectSummaryMetrics(candidate, nodeId, message.output_summary, metrics, metricIdentities, metricSources);
-        collectProgressMetrics(candidate, nodeId, message.progress, metrics, metricIdentities, metricSources);
+        // normalizeNodeStatus reads both the 1.3.0 shape (output_summary /
+        // progress on the message) and the current typed outputs entry list.
+        const normalized = normalizeNodeStatus(message);
+        collectSummaryMetrics(candidate, nodeId, normalized.scalars, metrics, metricIdentities, metricSources);
+        if (normalized.progress) {
+          collectProgressMetrics(candidate, nodeId, normalized.progress, metrics, metricIdentities, metricSources);
+        }
       } else if (type === 'execution_complete') {
         finish();
       } else if (type === 'execution_error' || type === 'execution_stopped' || type === 'error') {

@@ -289,3 +289,55 @@ describe('describeStage', () => {
     expect(d.label).toBe('Edit graph');
   });
 });
+
+describe('describeStage run_graph', () => {
+  const call = (args: Record<string, unknown> = { reason: 'Train the 200M model' }) => ({
+    id: 'run-call',
+    name: 'run_graph',
+    arguments: args,
+  });
+
+  it('shows the reason while the run streams', () => {
+    const d = describeStage({ call: call() });
+    expect(d.label).toBe('Run graph');
+    expect(d.status).toBe('running');
+    expect(d.summary).toBe('Train the 200M model');
+  });
+
+  it('summarizes a completed run with node counts and duration', () => {
+    const result = {
+      role: 'tool' as const,
+      tool_call_id: 'run-call',
+      content: JSON.stringify({
+        status: 'complete', completedNodes: 5, totalNodes: 5, duration_s: 65,
+      }),
+    };
+    const d = describeStage({ call: call(), result });
+    expect(d.status).toBe('ok');
+    expect(d.summary).toBe('complete · 5/5 nodes · 1m 05s');
+  });
+
+  it('marks a non-complete run status as error', () => {
+    const result = {
+      role: 'tool' as const,
+      tool_call_id: 'run-call',
+      content: JSON.stringify({
+        status: 'timeout', completedNodes: 2, totalNodes: 5, duration_s: 600,
+      }),
+    };
+    const d = describeStage({ call: call(), result });
+    expect(d.status).toBe('error');
+    expect(d.summary).toContain('timeout');
+  });
+
+  it('marks pre-execution refusals as errors with the message', () => {
+    const result = {
+      role: 'tool' as const,
+      tool_call_id: 'run-call',
+      content: JSON.stringify({ cancelled: true, error: 'The run was not approved by the user.' }),
+    };
+    const d = describeStage({ call: call(), result });
+    expect(d.status).toBe('error');
+    expect(d.summary).toContain('not approved');
+  });
+});

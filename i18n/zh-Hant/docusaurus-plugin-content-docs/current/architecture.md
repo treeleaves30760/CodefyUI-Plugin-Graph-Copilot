@@ -45,7 +45,7 @@ CodefyUI 編輯器頁面
 
 1. 從精簡節點目錄與依 schema 去敏的目前圖快照建立 system prompt。
 2. 透過 CodefyUI `/api/llm/chat` 代理串流模型回覆。
-3. 模型可以讀取最新圖、在畫布套用已驗證的 GraphOps、研究大型節點目錄，或啟動隔離實驗。
+3. 模型可以讀取最新圖、在畫布套用已驗證的 GraphOps、研究大型節點目錄、在使用者確認後執行 live canvas graph，或啟動隔離實驗。
 4. Graph tool result 會先依 schema／fail-closed 規則去敏，再回傳給模型；provider 產生之 tool call 的原始 argument 只留在當次 active provider/tool execution path。
 5. Graph-editing answer 嘗試結束時，runnability gate 最多允許兩個由 validation error 驅動的 corrective rounds。Live graph 若仍無效，該回合會回報 blocked／invalid，而不接受成功。
 6. 完成的對話、精簡實驗摘要與經過 integrity check 的 portable bundle 會寫入外掛的 browser storage。
@@ -67,6 +67,17 @@ CodefyUI 編輯器頁面
 
 Graph 隔離只保證候選 GraphOps 不會改動畫布，並不是通用 sandbox。若節點會寫檔、呼叫外部服務或改動其他資源，執行候選圖時仍可能產生副作用。
 
+## Live graph run（`run_graph`）
+
+使用者要求 run／train／evaluate 時，agent 可以執行 **live canvas graph** — 與編輯器 Run 按鈕相同的真實執行，帶真實副作用：
+
+1. 先通過 server-side validation；
+2. 使用者在 approval card 確認（節點／邊數、node types、時間上限、副作用警告），並套用與實驗核准相同的 concurrent-edit guard；
+3. 圖經 `/ws/execution` 執行；node status 與 live training progress（loss、epoch）串流到面板的狀態列；
+4. tool 回傳精簡結果：final status、per-node scalar/string output summary、最後 progress 值、`metric` 序列尾值、log text tail 與 per-node error。
+
+長時間訓練是預期情境：一次一個 run、預設 6 小時 wall-clock 上限（最高可調至 12 小時），可用面板 Stop 取消。兩代 host 的 run ownership 不同 — 現行 CodefyUI `main` 的 run 由 server 持有（關閉 socket **不會**停止，必須送 `cancel` action），1.3.0 則由 socket 持有（關閉即取消）。因此取消時會先送 `{action: "cancel"}` 再關 socket，兩代都能停止。頁面重載後 re-attach 尚未實作；在現行 host 上 run 本身仍會繼續，事件可經 host 的 run API 查詢。
+
 ## CodefyUI 契約邊界
 
 最低支援版本為 CodefyUI **1.3.0**。下表區分已發佈的 stable 契約，以及本頁於 **2026-07-14** 檢查的 CodefyUI `main`（`4260585`）。Graph Copilot 仍以 1.3.0 子集為相容基準。
@@ -80,12 +91,14 @@ Graph 隔離只保證候選 GraphOps 不會改動畫布，並不是通用 sandbo
 | `api.storage` | 命名空間化的 `get`、`set`、`remove` | 相同 | v1 |
 | `api.nodes` | 不存在 | additive `registerRenderer` 自訂 node body API | 非必要 |
 
-實驗 runner 也會使用已存在於 1.3.0、但不屬於 JavaScript API object 的服務：
+實驗 runner 與 live-run tool 也會使用已存在於 1.3.0、但不屬於 JavaScript API object 的服務：
 
 - `POST /api/graph/validate` 做權威驗證；
 - `GET /api/auth/bootstrap` 取得 WebSocket session token；
-- `/ws/execution` 執行 unsaved graph，帶唯一 `run_id`／`graph_id`、`record_outputs: false` 與 `weights_persistent: false`；
-- 接收 `node_status`、`execution_complete` 與 execution error。
+- `/ws/execution` 的 `action: "execute"` — 實驗送 unsaved candidate clone，帶 `record_outputs: false` 與 `weights_persistent: false`；live run 送 canvas graph，帶 `record_outputs: false` 與 `weights_persistent: true`；
+- 接收 `node_status`、`execution_complete` 與 execution error，較新 host 另有批次 `metric` 事件。
+
+`node_status` 的 payload 形狀在兩代 host 間不同：1.3.0 把 per-port summary 放在 `output_summary`、training frame 放在 `progress`；現行 host 改用 typed `outputs` entry list（`progress`、`tensor_summary`、`text` 與 media kinds）。外掛以單一 parser（`ui/src/agent/wireOutputs.ts`）同時支援兩種形狀，實驗 metrics 與 run 結果在任一代 host 都能運作。
 
 完整 tensor／artifact 不會被實驗 runner 保留；目前只收集事件中的 scalar numeric summary/progress。以上都是 CodefyUI core 現有服務，本外掛沒有註冊新 endpoint。
 
@@ -97,6 +110,8 @@ Graph 隔離只保證候選 GraphOps 不會改動畫布，並不是通用 sandbo
 | `ui/src/agent/loop.ts` | tool schema、多輪 agent loop、dispatch 與 turn callback |
 | `ui/src/agent/prompt.ts` | 圖／實驗政策與研究證據規則 |
 | `ui/src/agent/experiments.ts` | clone、mutate、validate、execute、measure、rank、選擇性 promotion 與摘要 |
+| `ui/src/agent/runGraph.ts` | live canvas graph 經 `/ws/execution` 執行：progress 串流、cancel／timeout 處理與精簡 run 結果 |
+| `ui/src/agent/wireOutputs.ts` | 跨 host 世代正規化 `node_status` payload（1.3.0 `output_summary`/`progress` 與現行 typed `outputs`） |
 | `ui/src/agent/optimizer.ts` | strict complete-grid 與 versioned seeded-random parameter plan compiler |
 | `ui/src/agent/experimentAnalysis.ts` | descriptive interval／effect size、formula-safe CSV 與 evidence-labeled Markdown |
 | `ui/src/agent/studyBundle.ts` | portable schema、canonical JSON、SHA-256 create／verify |
