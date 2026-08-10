@@ -1,7 +1,9 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import type { CodefyUIPluginAPI } from '../types/codefyui';
 import type { Settings } from '../state/settings';
-import { activeReasoningEffort, providerReady } from '../state/settings';
+import { activeReasoningEffort, providerReady, withReasoningEffort } from '../state/settings';
+import type { ReasoningEffort } from '../llm/models';
+import { catalogEntryForModel } from '../llm/models';
 import type { Conversation, ChatTurn } from '../state/conversations';
 import { saveConversation, titleFrom, listConversations } from '../state/conversations';
 import type { Attachment, AttachmentKind } from '../state/attachments';
@@ -9,7 +11,7 @@ import { classify, readFileAsAttachment, formatBytes } from '../state/attachment
 import { runTurn } from '../agent/loop';
 import type { ExperimentApprovalRequest } from '../agent/loop';
 import { MessageBubble } from './MessageBubble';
-import { groupTurns } from './turnStages';
+import { describeStage, groupTurns } from './turnStages';
 
 // ---------------------------------------------------------------------------
 // Icons
@@ -91,6 +93,22 @@ function ErrorIcon() {
   );
 }
 
+function BoltIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CheckMiniIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Staged attachment (local, pre-send) state
 // ---------------------------------------------------------------------------
@@ -125,6 +143,8 @@ export interface ChatViewProps {
   codexLoggedIn: boolean;
   conversation: Conversation;
   onConversationChange: (c: Conversation) => void;
+  /** Enables the in-composer reasoning-effort quick control when provided. */
+  onSettingsChange?: (s: Settings) => void;
   onOpenSettings: () => void;
   onOpenHistory: () => void;
 }
@@ -139,11 +159,13 @@ export function ChatView({
   codexLoggedIn,
   conversation,
   onConversationChange,
+  onSettingsChange,
   onOpenSettings,
   onOpenHistory,
 }: ChatViewProps) {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [effortOpen, setEffortOpen] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   /** Turns finalized during the in-flight run (staged display). */
   const [liveTurns, setLiveTurns] = useState<ChatTurn[]>([]);
@@ -427,8 +449,36 @@ export function ChatView({
   // While a tool is executing, its stage row already shows a spinner — the
   // generic thinking indicator is only for gaps with no visible activity.
   const lastItem = items[items.length - 1];
-  const toolRunning = !!lastItem && lastItem.stages.some((s) => !s.result);
+  const runningStage = lastItem?.stages.find((s) => !s.result);
+  const toolRunning = !!runningStage;
   const showThinking = busy && streamingText === '' && !toolRunning && !experimentApproval;
+
+  // Live run status for the composer bar: what the agent is doing right now.
+  const liveStepCount = liveTurns.filter(
+    (t) => t.role === 'assistant' && (t.tool_calls?.length ?? 0) > 0,
+  ).length;
+  const runPhase = experimentApproval
+    ? 'Waiting for approval'
+    : streamingText !== ''
+    ? 'Writing reply'
+    : runningStage
+    ? describeStage(runningStage).label
+    : 'Thinking';
+
+  // Composer model/effort identity. Effort options surface only after the
+  // host has confirmed reasoning-effort support for this provider+model.
+  const provider = settings.provider;
+  const modelId = settings.models[provider] ?? '';
+  const catalogEntry = catalogEntryForModel(provider, modelId);
+  const effortCapable = settings.providerCapabilities?.[provider]?.reasoningEffort === true;
+  const effortOptions = onSettingsChange && effortCapable
+    ? catalogEntry?.reasoningEfforts ?? []
+    : [];
+  const selectedEffort = settings.reasoningEfforts?.[provider] ?? '';
+  const chooseEffort = (effort: ReasoningEffort | '') => {
+    setEffortOpen(false);
+    onSettingsChange?.(withReasoningEffort(settings, provider, effort));
+  };
 
   // On the welcome screen, surface a shortcut to past chats (every panel open
   // starts a fresh conversation, so this is where users look for earlier ones).
@@ -484,7 +534,12 @@ export function ChatView({
         )}
 
         {items.map((item) => (
-          <MessageBubble key={item.key} turn={item.turn} stages={item.stages} />
+          <MessageBubble
+            key={item.key}
+            turn={item.turn}
+            stages={item.stages}
+            step={item.step}
+          />
         ))}
 
         {/* Text currently streaming for this round */}
@@ -528,6 +583,15 @@ export function ChatView({
             <span>Drop files to attach</span>
           </div>
         </div>
+      )}
+
+      {/* Click-outside catcher for the effort menu */}
+      {effortOpen && (
+        <button
+          className="gcp-menu-backdrop"
+          aria-label="Close menu"
+          onClick={() => setEffortOpen(false)}
+        />
       )}
 
       {experimentApproval && (
@@ -669,11 +733,107 @@ export function ChatView({
           )}
         </div>
 
-        {/* Keyboard hint */}
-        <div className="gcp-input-hint" aria-hidden="true">
-          {busy
-            ? 'Generating — use the stop button to interrupt'
-            : 'Enter to send · Shift+Enter for a new line'}
+        {/* Composer bar: model + effort identity on the left, live run
+            status (or the keyboard hint) on the right. */}
+        <div className="gcp-composer-bar">
+          <div className="gcp-composer-context">
+            {effortOptions.length > 0 ? (
+              <div
+                className="gcp-effort"
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setEffortOpen(false);
+                }}
+              >
+                <button
+                  className={`gcp-context-chip${effortOpen ? ' open' : ''}`}
+                  onClick={() => setEffortOpen((v) => !v)}
+                  aria-haspopup="menu"
+                  aria-expanded={effortOpen}
+                  aria-label="Model and reasoning effort"
+                  title="Adjust reasoning effort"
+                >
+                  <BoltIcon />
+                  <span className="gcp-context-chip-model">{modelId || 'model'}</span>
+                  <span className="gcp-context-chip-effort">
+                    {selectedEffort || catalogEntry?.defaultReasoningEffort || 'auto'}
+                  </span>
+                </button>
+                {effortOpen && (
+                  <div className="gcp-effort-menu" role="menu" aria-label="Reasoning effort">
+                    <div className="gcp-effort-menu-title">Reasoning effort</div>
+                    {effortOptions.map((option) => (
+                      <button
+                        key={option.effort}
+                        role="menuitemradio"
+                        aria-checked={selectedEffort === option.effort}
+                        className={`gcp-effort-item${selectedEffort === option.effort ? ' selected' : ''}`}
+                        onClick={() => chooseEffort(option.effort)}
+                      >
+                        <span className="gcp-effort-item-name">{option.effort}</span>
+                        {option.description && (
+                          <span className="gcp-effort-item-desc">{option.description}</span>
+                        )}
+                        <span className="gcp-effort-item-check" aria-hidden="true">
+                          {selectedEffort === option.effort && <CheckMiniIcon />}
+                        </span>
+                      </button>
+                    ))}
+                    <button
+                      role="menuitemradio"
+                      aria-checked={selectedEffort === ''}
+                      className={`gcp-effort-item${selectedEffort === '' ? ' selected' : ''}`}
+                      onClick={() => chooseEffort('')}
+                    >
+                      <span className="gcp-effort-item-name">
+                        model default
+                        {catalogEntry?.defaultReasoningEffort
+                          ? ` (${catalogEntry.defaultReasoningEffort})`
+                          : ''}
+                      </span>
+                      <span className="gcp-effort-item-check" aria-hidden="true">
+                        {selectedEffort === '' && <CheckMiniIcon />}
+                      </span>
+                    </button>
+                    <div className="gcp-effort-menu-divider" role="separator" />
+                    <button
+                      role="menuitem"
+                      className="gcp-effort-item"
+                      onClick={() => {
+                        setEffortOpen(false);
+                        onOpenSettings();
+                      }}
+                    >
+                      <span className="gcp-effort-item-name">Change model…</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                className="gcp-context-chip"
+                onClick={onOpenSettings}
+                aria-label="Model settings"
+                title={`Provider: ${provider} — open settings`}
+              >
+                <span className="gcp-context-chip-model">{modelId || 'set up model'}</span>
+              </button>
+            )}
+          </div>
+
+          {busy ? (
+            <div className="gcp-runbar" role="status" aria-label="Agent activity">
+              <span className="gcp-runbar-pulse" aria-hidden="true" />
+              <span className="gcp-runbar-phase">{runPhase}…</span>
+              {liveStepCount > 0 && (
+                <span className="gcp-runbar-step">step {liveStepCount}</span>
+              )}
+              {elapsed >= 1 && <span className="gcp-runbar-time">{elapsed}s</span>}
+            </div>
+          ) : (
+            <div className="gcp-composer-hint" aria-hidden="true">
+              Enter ↵ send · Shift+Enter newline
+            </div>
+          )}
         </div>
 
         {/* Provider-not-ready overlay */}

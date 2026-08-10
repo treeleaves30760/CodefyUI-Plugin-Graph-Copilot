@@ -2,13 +2,15 @@ import React, { useState } from 'react';
 import type { ChatTurn } from '../state/conversations';
 import type { AttachmentKind } from '../state/attachments';
 import type { ToolStage } from './turnStages';
-import { describeStage } from './turnStages';
+import { describeStage, formatDuration } from './turnStages';
 import { Markdown } from './markdown';
 
 interface MessageBubbleProps {
   turn: ChatTurn;
   /** Tool stages grouped under this assistant turn (see turnStages). */
   stages?: ToolStage[];
+  /** 1-based agent step number for tool-calling rounds (see groupTurns). */
+  step?: number;
   streaming?: boolean;
   streamingText?: string;
 }
@@ -90,6 +92,7 @@ function ToolStageRow({ stage }: { stage: ToolStage }) {
   const [open, setOpen] = useState(false);
   const d = describeStage(stage);
   const expandable = !!d.detail;
+  const durationMs = stage.result?.durationMs;
 
   return (
     <div className={`gcp-stage ${d.status}`}>
@@ -112,6 +115,9 @@ function ToolStageRow({ stage }: { stage: ToolStage }) {
         </span>
         <span className="gcp-stage-label">{d.label}</span>
         {d.summary && <span className="gcp-stage-summary">{d.summary}</span>}
+        {typeof durationMs === 'number' && (
+          <span className="gcp-stage-time">{formatDuration(durationMs)}</span>
+        )}
         {expandable && <ChevronIcon open={open} />}
       </button>
       {open && d.detail && <pre className="gcp-stage-detail">{d.detail}</pre>}
@@ -126,6 +132,7 @@ function ToolStageRow({ stage }: { stage: ToolStage }) {
 export function MessageBubble({
   turn,
   stages = [],
+  step,
   streaming = false,
   streamingText,
 }: MessageBubbleProps) {
@@ -136,9 +143,10 @@ export function MessageBubble({
   const displayText = streaming && streamingText !== undefined ? streamingText : turn.content;
   const hasText = displayText.trim().length > 0;
   const attachments = turn.attachments ?? [];
+  const isStep = !isUser && stages.length > 0;
 
   return (
-    <div className={`gcp-msg-row ${isUser ? 'user' : 'assistant'}`}>
+    <div className={`gcp-msg-row ${isUser ? 'user' : 'assistant'}${isStep ? ' step' : ''}`}>
       {/* Attachments (above the text, for user turns) */}
       {attachments.length > 0 && (
         <div className="gcp-bubble-attachments">
@@ -155,6 +163,14 @@ export function MessageBubble({
         </div>
       )}
 
+      {/* Step marker — labels each tool-calling round of a multi-round run */}
+      {isStep && typeof step === 'number' && (
+        <div className="gcp-step-tag">
+          <span className="gcp-step-tag-dot" aria-hidden="true" />
+          Step {step}
+        </div>
+      )}
+
       {/* Text bubble — skipped when a turn carries only attachments/stages */}
       {(hasText || (streaming && stages.length === 0)) && (
         <div className="gcp-bubble">
@@ -163,7 +179,7 @@ export function MessageBubble({
         </div>
       )}
 
-      {/* Tool stages (assistant turns only) */}
+      {/* Tool stages (assistant turns only) — the wired step timeline */}
       {stages.length > 0 && (
         <div className="gcp-stages">
           {stages.map((s, i) => (

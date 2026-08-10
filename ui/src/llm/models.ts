@@ -59,7 +59,7 @@ const GPT56_MODELS = [
     id: 'gpt-5.6-sol',
     label: 'GPT-5.6 Sol',
     description: 'Frontier model for complex professional work',
-    codexDefault: 'low',
+    codexDefault: 'max',
   },
   {
     id: 'gpt-5.6-terra',

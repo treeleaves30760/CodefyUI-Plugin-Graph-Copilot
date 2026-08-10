@@ -139,6 +139,50 @@ describe('MessageBubble tool stages', () => {
     );
     expect(screen.queryByText(/legacy-chip-text/)).toBeNull();
   });
+
+  it('labels a tool-calling round with its step number', () => {
+    const stage = applyStage();
+    const { container } = render(
+      <MessageBubble
+        turn={{ role: 'assistant', content: 'wiring', tool_calls: [stage.call] }}
+        stages={[stage]}
+        step={2}
+      />,
+    );
+    expect(container.querySelector('.gcp-step-tag')!.textContent).toContain('Step 2');
+  });
+
+  it('never shows a step tag on plain replies or user turns', () => {
+    const plain = render(<MessageBubble turn={{ role: 'assistant', content: 'done' }} step={3} />);
+    expect(plain.container.querySelector('.gcp-step-tag')).toBeNull();
+    const user = render(<MessageBubble turn={{ role: 'user', content: 'hi' }} step={1} />);
+    expect(user.container.querySelector('.gcp-step-tag')).toBeNull();
+  });
+
+  it('shows the tool execution duration on completed stages', () => {
+    const stage = applyStage({
+      result: {
+        role: 'tool',
+        tool_call_id: 'tc1',
+        content: JSON.stringify({ results: [{ index: 0, ok: true }], refs: {}, node_count: 1, edge_count: 0 }),
+        durationMs: 1_400,
+      },
+    });
+    const { container } = render(
+      <MessageBubble turn={{ role: 'assistant', content: '', tool_calls: [stage.call] }} stages={[stage]} />,
+    );
+    expect(container.querySelector('.gcp-stage-time')!.textContent).toBe('1.4s');
+  });
+
+  it('omits the duration for legacy results without one', () => {
+    const stage = applyStage({
+      result: { role: 'tool', tool_call_id: 'tc1', content: '{"results":[]}' },
+    });
+    const { container } = render(
+      <MessageBubble turn={{ role: 'assistant', content: '', tool_calls: [stage.call] }} stages={[stage]} />,
+    );
+    expect(container.querySelector('.gcp-stage-time')).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

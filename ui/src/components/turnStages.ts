@@ -28,6 +28,9 @@ export interface DisplayItem {
   turn: ChatTurn;
   /** Tool stages under an assistant turn ([] for user turns / plain replies). */
   stages: ToolStage[];
+  /** 1-based agent step number among tool-calling rounds, reset at each user
+   *  turn — labels each round of a multi-round run. Absent on plain replies. */
+  step?: number;
 }
 
 /** Group a flat turn list for display. Tool turns attach to the nearest
@@ -35,6 +38,7 @@ export interface DisplayItem {
  *  orphan tool turns are dropped (they were never rendered standalone). */
 export function groupTurns(turns: ChatTurn[]): DisplayItem[] {
   const items: DisplayItem[] = [];
+  let stepInRun = 0;
 
   turns.forEach((turn, i) => {
     if (turn.role === 'tool') {
@@ -50,14 +54,28 @@ export function groupTurns(turns: ChatTurn[]): DisplayItem[] {
       return; // orphan tool turn
     }
 
+    if (turn.role === 'user') stepInRun = 0;
+    const stages = (turn.tool_calls ?? []).map((call): ToolStage => ({ call }));
     items.push({
       key: i,
       turn,
-      stages: (turn.tool_calls ?? []).map((call) => ({ call })),
+      stages,
+      ...(stages.length > 0 ? { step: ++stepInRun } : {}),
     });
   });
 
   return items;
+}
+
+/** Compact human duration for stage rows: "0.4s", "12s", "2m 05s". */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 10_000) return `${Math.max(ms / 1000, 0.1).toFixed(1)}s`;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
 }
 
 // ---------------------------------------------------------------------------

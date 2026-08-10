@@ -42,7 +42,9 @@ OpenAI 的 `/v1/models` response 只有 model ID，不含 reasoning-effort metad
 
 ## Reasoning effort
 
-Host catalog 提供 reasoning metadata 時，Settings 會顯示 reasoning-effort selector，並把選項以 `reasoning_effort` 送出。第一方 OpenAI request 可在所選模型支援時使用 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`。Codex fallback 提供 `low`、`medium`、`high`、`xhigh` 與 `max`；Sol 預設為 `low`，Terra 與 Luna 預設為 `medium`。
+Host catalog 提供 reasoning metadata 時，effort 控制會出現在兩個地方：對話輸入區的快速 chip（點模型名稱即可切換強度，不必離開對話），以及 Settings 內的 selector。兩者都會把選項以 `reasoning_effort` 送出。第一方 OpenAI request 可在所選模型支援時使用 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`。Codex fallback 提供 `low`、`medium`、`high`、`xhigh` 與 `max`；Sol 預設為 `max`，Terra 與 Luna 預設為 `medium`。
+
+預設情況下，Codex provider 直接鎖定 **GPT-5.6 Sol at `max` effort** — Graph Copilot 是 agent workbench，因此預設採用最強配置，讓你在單一對話中視需要調低強度。這個值仍受 host 能力把關：在 host 確認所選模型支援 `reasoning_effort` 之前不會送出。
 
 Codex **不會顯示 `ultra`**。Ultra 是產品層級的 multi-agent／delegation mode，不是可攜、可放進單一 request `reasoning_effort` 的公開值。Graph Copilot 只會經 CodefyUI 送出單一 request，並未實作該 orchestration contract；若顯示或轉送 `ultra`，會誤導實際行為，也可能被上游拒絕。
 

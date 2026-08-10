@@ -237,6 +237,7 @@ export function ChatWindow({
             codexLoggedIn={codexLoggedIn}
             conversation={conversation}
             onConversationChange={onConversationChange}
+            onSettingsChange={onSettingsChange}
             onOpenSettings={() => setView('settings')}
             onOpenHistory={() => setView('history')}
           />

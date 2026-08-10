@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { ChatTurn } from '../state/conversations';
-import { groupTurns, describeStage } from './turnStages';
+import { groupTurns, describeStage, formatDuration } from './turnStages';
 
 const applyCall = (id = 'tc1', ops: unknown = [{ op: 'add_node', node_type: 'Conv2d' }, { op: 'add_node', node_type: 'ReLU' }, { op: 'connect', source: 'a', source_handle: 'y', target: 'b', target_handle: 'x' }]) => ({
   id,
@@ -63,6 +63,47 @@ describe('groupTurns', () => {
     const items = groupTurns(turns);
     expect(items[0].stages[0].result?.content).toBe('first');
     expect(items[1].stages[0].result?.content).toBe('second');
+  });
+
+  it('numbers tool-calling rounds as steps, resetting at each user turn', () => {
+    const turns: ChatTurn[] = [
+      { role: 'user', content: 'build it' },
+      { role: 'assistant', content: 'plan', tool_calls: [applyCall('a')] },
+      { role: 'tool', content: 'r', tool_call_id: 'a' },
+      { role: 'assistant', content: 'more', tool_calls: [applyCall('b')] },
+      { role: 'tool', content: 'r', tool_call_id: 'b' },
+      { role: 'assistant', content: 'done' }, // plain reply: no step
+      { role: 'user', content: 'again' },
+      { role: 'assistant', content: '', tool_calls: [applyCall('c')] },
+    ];
+    const items = groupTurns(turns);
+    expect(items[0].step).toBeUndefined(); // user
+    expect(items[1].step).toBe(1);
+    expect(items[2].step).toBe(2);
+    expect(items[3].step).toBeUndefined(); // final reply
+    expect(items[4].step).toBeUndefined(); // user
+    expect(items[5].step).toBe(1); // counter reset
+  });
+});
+
+describe('formatDuration', () => {
+  it('formats sub-10s durations with one decimal', () => {
+    expect(formatDuration(437)).toBe('0.4s');
+    expect(formatDuration(9_940)).toBe('9.9s');
+  });
+
+  it('clamps tiny durations instead of showing 0.0s', () => {
+    expect(formatDuration(12)).toBe('0.1s');
+  });
+
+  it('formats seconds and minutes', () => {
+    expect(formatDuration(42_000)).toBe('42s');
+    expect(formatDuration(125_000)).toBe('2m 05s');
+  });
+
+  it('returns empty for invalid input', () => {
+    expect(formatDuration(-5)).toBe('');
+    expect(formatDuration(Number.NaN)).toBe('');
   });
 });
 
