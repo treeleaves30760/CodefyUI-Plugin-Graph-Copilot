@@ -14,7 +14,7 @@ Graph Copilot 目前由編輯器頁面協調。若 agent 必須在瀏覽器關�
 
 - Plugin discovery 只載入 frontend entry 與 node package，沒有 backend lifecycle／job handler。
 - Frontend graph API 只作用於 active tab，沒有 tab identity、revision、建立 tab 或 atomic compare-and-swap edit。
-- `/ws/execution` 的 task 只存在單一 socket 記憶體，socket 中斷時即取消。
+- CodefyUI 1.3.0 上，`/ws/execution` 的 task 只存在單一 socket 記憶體，socket 中斷時即取消；現行 `main` 已把 run 移入 server-owned run service（durable events、attach/detach、明確 cancel action），縮小了這個缺口，但仍沒有 plugin-scoped job identity、budget 或 checkpointed resume。
 - 現有持久化 run 屬於 published app；完整 execution output 只有小型 in-memory cache。
 
 因此本 repo 會保留 bounded browser engine 作為相容路徑，但不能把它宣稱成 durable backend queue。

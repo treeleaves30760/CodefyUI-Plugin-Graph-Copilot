@@ -27,6 +27,12 @@ import {
   redactToolResultForContext,
 } from './historyRedaction';
 import { compileParameterOptimizer } from './optimizer';
+import {
+  DEFAULT_RUN_TIMEOUT_MINUTES,
+  MAX_RUN_TIMEOUT_MINUTES,
+  runLiveGraph,
+} from './runGraph';
+import type { RunProgressUpdate } from './runGraph';
 
 // ---------------------------------------------------------------------------
 // Constants & tool definitions
@@ -84,6 +90,27 @@ Each entry in "operations" is one GraphOp object; use these EXACT field names:
     description:
       'Validate the current graph on the server: checks for unknown node types, MISSING REQUIRED INPUT connections, and out-of-range params. Returns {"valid": boolean, "errors": string[]}. Call this after building and fix every error until valid is true — this is what makes the graph actually runnable.',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'run_graph',
+    description:
+      `Execute the CURRENT canvas graph on the CodefyUI backend — the user's real run, with real side effects (file writes, network calls, GPU time). A user-facing confirmation is required before it starts. Call this AFTER validate_graph reports "valid": true, when the user asked to run, train, or evaluate their graph. Node statuses and live training progress (loss, epochs) stream to the panel while it runs; long training runs are expected and fine — do not cancel or restart one without being asked. Returns the final status, per-node scalar/string outputs, last progress values, metric tails, and any node errors. Use run_graph for "run it / train it"; use run_graph_experiments only for comparing variants.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'One short sentence shown in the user confirmation: what this run does and why.',
+        },
+        timeout_minutes: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 720,
+          description: 'Optional wall-clock cap in minutes (default 360). Pick generously for training runs.',
+        },
+      },
+      required: ['reason'],
+    },
   },
   {
     name: 'research',
@@ -191,6 +218,14 @@ export interface ExperimentApprovalRequest {
   nodeTypes: string[];
 }
 
+export interface RunApprovalRequest {
+  reason: string;
+  nodeCount: number;
+  edgeCount: number;
+  nodeTypes: string[];
+  timeoutMinutes: number;
+}
+
 export interface TurnCallbacks {
   onTextDelta(t: string): void;
   /**
@@ -203,6 +238,10 @@ export interface TurnCallbacks {
   onOpsApplied(summary: string, result: ApplyResult): void;
   /** Explicit user confirmation before real graph nodes are executed. */
   onExperimentApproval?(request: ExperimentApprovalRequest): Promise<boolean>;
+  /** Explicit user confirmation before the LIVE canvas graph is executed. */
+  onRunApproval?(request: RunApprovalRequest): Promise<boolean>;
+  /** Live progress stream while a run_graph execution is in flight. */
+  onRunProgress?(update: RunProgressUpdate): void;
   /** Called once at the end (success, error, or cap) with ALL turns accumulated. */
   onTurnsCommitted(turns: ChatTurn[]): void;
   onError(message: string): void;
@@ -574,6 +613,11 @@ async function researchSubagent(
 // and optionally trigger callbacks
 // ---------------------------------------------------------------------------
 
+/** One live run at a time, across all turns in this page session. The host's
+ * interactive lane has its own cap, but failing fast here gives the model an
+ * actionable message instead of a queueing surprise. */
+let liveRunInFlight = false;
+
 async function executeTool(
   toolCall: WireToolCall,
   api: CodefyUIPluginAPI,
@@ -628,6 +672,116 @@ async function executeTool(
 
   if (name === 'validate_graph') {
     return JSON.stringify(await validateCurrentGraph(api));
+  }
+
+  if (name === 'run_graph') {
+    if (liveRunInFlight) {
+      return JSON.stringify({
+        error: 'A live graph run is already in progress. Wait for it to finish or cancel it before starting another.',
+      });
+    }
+    const reason = typeof args.reason === 'string' && args.reason.trim()
+      ? args.reason.trim().slice(0, 300)
+      : 'Run the current graph.';
+    const rawTimeout = typeof args.timeout_minutes === 'number' && Number.isFinite(args.timeout_minutes)
+      ? Math.round(args.timeout_minutes)
+      : DEFAULT_RUN_TIMEOUT_MINUTES;
+    const timeoutMinutes = Math.min(Math.max(rawTimeout, 1), MAX_RUN_TIMEOUT_MINUTES);
+    if (signal?.aborted) {
+      return JSON.stringify({ cancelled: true, error: 'Run cancelled before execution.' });
+    }
+
+    // Refuse to launch a graph the host already reports as broken.
+    const validation = await validateCurrentGraph(api);
+    if (!validation.valid) {
+      return JSON.stringify({
+        error: 'The current graph is not runnable — fix these validation errors, then call run_graph again.',
+        errors: validation.errors,
+      });
+    }
+
+    if (!callbacks.onRunApproval) {
+      return JSON.stringify({
+        error: 'Running the live graph requires an interactive user confirmation, but this client did not provide one.',
+      });
+    }
+
+    // Approval uses the same graph-stability guard as experiments: what the
+    // user approves must be exactly what runs.
+    let approvalGraphChanged = false;
+    let stopApprovalWatch: (() => void) | undefined;
+    try {
+      stopApprovalWatch = api.graph.onGraphChanged(() => { approvalGraphChanged = true; });
+    } catch (error) {
+      return JSON.stringify({ error: `Cannot safely watch the graph during approval: ${String(error)}` });
+    }
+    let approvalFingerprint: string;
+    try {
+      approvalFingerprint = graphRevisionFingerprint(api);
+    } catch (error) {
+      stopApprovalWatch();
+      return JSON.stringify({ error: `Cannot capture the graph before approval: ${String(error)}` });
+    }
+    let approved: boolean;
+    try {
+      const graph = api.graph.getGraph();
+      approved = await callbacks.onRunApproval({
+        reason,
+        nodeCount: graph.nodes.filter((node) => node.type !== 'note').length,
+        edgeCount: graph.edges.length,
+        nodeTypes: [...new Set(
+          graph.nodes
+            .map((node) => node.type)
+            .filter((type): type is string => !!type && type !== 'note'),
+        )],
+        timeoutMinutes,
+      });
+    } catch (error) {
+      if (signal?.aborted) {
+        return JSON.stringify({ cancelled: true, error: 'Run cancelled before execution.' });
+      }
+      return JSON.stringify({ error: `Run approval failed: ${String(error)}` });
+    } finally {
+      stopApprovalWatch();
+    }
+    if (!approved) {
+      return JSON.stringify({ cancelled: true, error: 'The run was not approved by the user.' });
+    }
+    if (signal?.aborted) {
+      return JSON.stringify({ cancelled: true, error: 'Run cancelled before execution.' });
+    }
+    let fingerprintChanged: boolean;
+    try {
+      fingerprintChanged = graphRevisionFingerprint(api) !== approvalFingerprint;
+    } catch (error) {
+      return JSON.stringify({ error: `Cannot re-check the graph after approval: ${String(error)}` });
+    }
+    if (approvalGraphChanged || fingerprintChanged) {
+      return JSON.stringify({
+        cancelled: true,
+        replan: true,
+        error: 'The graph changed while the run approval was open. Re-read the graph, re-validate, and propose the run again.',
+      });
+    }
+
+    liveRunInFlight = true;
+    try {
+      const outcome = await runLiveGraph(api, {
+        signal,
+        timeoutMs: timeoutMinutes * 60_000,
+        onProgress: callbacks.onRunProgress,
+      });
+      const { durationMs, textTail, ...rest } = outcome;
+      return JSON.stringify({
+        ...rest,
+        duration_s: Math.round(durationMs / 1000),
+        ...(textTail ? { text_tail: textTail } : {}),
+      });
+    } catch (error) {
+      return JSON.stringify({ error: `Run failed: ${String(error)}` });
+    } finally {
+      liveRunInFlight = false;
+    }
   }
 
   if (name === 'research') {

@@ -98,6 +98,7 @@ const LABELS: Record<string, string> = {
   get_node_schemas: 'Node schemas',
   validate_graph: 'Validate graph',
   research: 'Research',
+  run_graph: 'Run graph',
   run_graph_experiments: 'Experiment study',
   optimize_graph_parameters: 'Parameter search',
 };
@@ -281,6 +282,35 @@ function describeOptimizer(args: Record<string, unknown>, result?: ChatTurn): St
   };
 }
 
+function describeRunGraph(args: Record<string, unknown>, result?: ChatTurn): StageDescription {
+  const label = LABELS.run_graph;
+  const reason = typeof args.reason === 'string' ? truncate(args.reason, 90) : '';
+  if (!result) return { label, summary: reason || 'executing…', status: 'running' };
+  const parsed = parseJson(result.content);
+  if (!parsed) {
+    return { label, summary: 'done', status: 'ok', detail: prettyDetail(result.content) };
+  }
+  if (typeof parsed.status !== 'string') {
+    // Pre-execution refusals: validation failures, declined approval, budget.
+    const message = typeof parsed.error === 'string' ? parsed.error : 'run not started';
+    return { label, summary: truncate(message, 120), status: 'error', detail: prettyDetail(result.content) };
+  }
+  const runStatus = parsed.status;
+  const parts: string[] = [runStatus];
+  if (typeof parsed.completedNodes === 'number' && typeof parsed.totalNodes === 'number') {
+    parts.push(`${parsed.completedNodes}/${parsed.totalNodes} nodes`);
+  }
+  if (typeof parsed.duration_s === 'number') {
+    parts.push(formatDuration(parsed.duration_s * 1000));
+  }
+  return {
+    label,
+    summary: parts.join(' · '),
+    status: runStatus === 'complete' ? 'ok' : 'error',
+    detail: prettyDetail(result.content),
+  };
+}
+
 function describeGeneric(call: WireToolCall, result?: ChatTurn): StageDescription {
   const label = LABELS[call.name] ?? call.name;
   if (!result) return { label, summary: 'running…', status: 'running' };
@@ -307,6 +337,8 @@ export function describeStage(stage: ToolStage): StageDescription {
       return describeSchemas(args, result);
     case 'research':
       return describeResearch(args, result);
+    case 'run_graph':
+      return describeRunGraph(args, result);
     case 'run_graph_experiments':
       return describeExperiment(args, result);
     case 'optimize_graph_parameters':

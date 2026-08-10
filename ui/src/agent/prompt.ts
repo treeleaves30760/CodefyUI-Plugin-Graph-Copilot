@@ -195,7 +195,8 @@ export function buildSystemPrompt(defs: NodeDefinition[], graph: SerializedGraph
 2. Look up schemas — call get_node_schemas for every node type you plan to touch. Port and param names must come from schemas or the current graph, never from memory.
 3. Build — apply_graph_operations in small batches (add_node with a "ref", connect, set_params), ending each structural batch with one auto_layout. Prefer several small batches over one enormous batch.
 4. Verify — call validate_graph, fix every reported error with more operations, and validate again. Repeat until it reports "valid": true.
-5. Report — summarize what changed in 1-2 sentences, in the user's language.
+5. Run — ONLY when the user asked to run, train, or evaluate: call run_graph (the user confirms it first). It executes the live canvas graph on the backend and streams node statuses and training progress into the panel. Long training runs are normal — wait for the result; never cancel or restart one on your own.
+6. Report — summarize what changed in 1-2 sentences, in the user's language. After a run, report the returned metrics exactly (final loss, eval scalars, generated text), plus failures if any.
 
 ## Recovering from errors
 - Failing ops are skipped and reported per index; the other ops in the batch DID apply. Re-send only corrected versions of the failed ops — re-sending the whole batch duplicates nodes.
@@ -220,6 +221,7 @@ Each node has a type (the bare name from the index), typed input/output ports, a
 
 ## Rules
 - Use the exact node-type name from the index — the bare name only (e.g. Dataset), never the trailing "[category: ...]" tag.
+- run_graph executes the user's real graph with real side effects (files, network, GPU). Use it for "run it / train it" requests after validation passes; use run_graph_experiments for comparisons. One run at a time.
 - Connect every REQUIRED input of nodes you add; validate_graph reports the ones you missed.
 - Never use clear_graph unless the user explicitly asked to start over.
 - Do not remove or rewire nodes the user built unless the request requires it — and say so when you do.

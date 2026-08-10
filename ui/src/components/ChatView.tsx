@@ -9,7 +9,8 @@ import { saveConversation, titleFrom, listConversations } from '../state/convers
 import type { Attachment, AttachmentKind } from '../state/attachments';
 import { classify, readFileAsAttachment, formatBytes } from '../state/attachments';
 import { runTurn } from '../agent/loop';
-import type { ExperimentApprovalRequest } from '../agent/loop';
+import type { ExperimentApprovalRequest, RunApprovalRequest } from '../agent/loop';
+import { formatRunStatusLine } from '../agent/runGraph';
 import { MessageBubble } from './MessageBubble';
 import { describeStage, groupTurns } from './turnStages';
 
@@ -176,6 +177,8 @@ export function ChatView({
   const [staged, setStaged] = useState<Staged[]>([]);
   const [dragging, setDragging] = useState(false);
   const [experimentApproval, setExperimentApproval] = useState<ExperimentApprovalRequest | null>(null);
+  const [runApproval, setRunApproval] = useState<RunApprovalRequest | null>(null);
+  const [runStatusLine, setRunStatusLine] = useState<string | null>(null);
 
   const listRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true); // stick to bottom unless the user scrolls up
@@ -371,6 +374,10 @@ export function ChatView({
             if (turn.role !== 'tool') {
               streamBuf = '';
               setStreamingText('');
+            } else {
+              // A landed tool result ends any live run status; a still-running
+              // run keeps re-setting the line with each progress event.
+              setRunStatusLine(null);
             }
             setLiveTurns((prev) => [...prev, turn]);
           },
@@ -382,6 +389,17 @@ export function ChatView({
               approvalResolveRef.current = resolve;
               setExperimentApproval(request);
             });
+          },
+          onRunApproval(request) {
+            if (abortCtrl.signal.aborted) return Promise.resolve(false);
+            approvalResolveRef.current?.(false);
+            return new Promise<boolean>((resolve) => {
+              approvalResolveRef.current = resolve;
+              setRunApproval(request);
+            });
+          },
+          onRunProgress(update) {
+            setRunStatusLine(formatRunStatusLine(update));
           },
           onTurnsCommitted(turns) {
             setStreamingText('');
@@ -400,6 +418,8 @@ export function ChatView({
             approvalResolveRef.current?.(false);
             approvalResolveRef.current = null;
             setExperimentApproval(null);
+            setRunApproval(null);
+            setRunStatusLine(null);
             setBusy(false);
             abortRef.current = null;
           },
@@ -423,12 +443,19 @@ export function ChatView({
     approvalResolveRef.current?.(false);
     approvalResolveRef.current = null;
     setExperimentApproval(null);
+    setRunApproval(null);
     abortRef.current?.abort();
   };
   const handleExperimentDecision = (approved: boolean) => {
     const resolve = approvalResolveRef.current;
     approvalResolveRef.current = null;
     setExperimentApproval(null);
+    resolve?.(approved);
+  };
+  const handleRunDecision = (approved: boolean) => {
+    const resolve = approvalResolveRef.current;
+    approvalResolveRef.current = null;
+    setRunApproval(null);
     resolve?.(approved);
   };
   const handleRetry = () => doSend(lastUserText, lastAttachments);
@@ -451,14 +478,16 @@ export function ChatView({
   const lastItem = items[items.length - 1];
   const runningStage = lastItem?.stages.find((s) => !s.result);
   const toolRunning = !!runningStage;
-  const showThinking = busy && streamingText === '' && !toolRunning && !experimentApproval;
+  const showThinking = busy && streamingText === '' && !toolRunning && !experimentApproval && !runApproval;
 
   // Live run status for the composer bar: what the agent is doing right now.
   const liveStepCount = liveTurns.filter(
     (t) => t.role === 'assistant' && (t.tool_calls?.length ?? 0) > 0,
   ).length;
-  const runPhase = experimentApproval
+  const runPhase = experimentApproval || runApproval
     ? 'Waiting for approval'
+    : runStatusLine
+    ? runStatusLine
     : streamingText !== ''
     ? 'Writing reply'
     : runningStage
@@ -639,6 +668,47 @@ export function ChatView({
               </button>
               <button className="gcp-approval-primary" onClick={() => handleExperimentDecision(true)}>
                 Approve and run
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {runApproval && (
+        <div className="gcp-experiment-approval-backdrop">
+          <div
+            className="gcp-experiment-approval"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="gcp-run-approval-title"
+          >
+            <div className="gcp-experiment-approval-kicker">Execution approval</div>
+            <div id="gcp-run-approval-title" className="gcp-experiment-approval-title">
+              Run the current graph?
+            </div>
+            <div className="gcp-experiment-approval-hypothesis">
+              {runApproval.reason}
+            </div>
+            <div className="gcp-experiment-approval-facts">
+              <span>{runApproval.nodeCount} node{runApproval.nodeCount === 1 ? '' : 's'}</span>
+              <span>{runApproval.edgeCount} edge{runApproval.edgeCount === 1 ? '' : 's'}</span>
+              <span>time cap {runApproval.timeoutMinutes} min</span>
+            </div>
+            <div className="gcp-experiment-approval-nodes">
+              <strong>Nodes that will execute</strong>
+              <span>{runApproval.nodeTypes.length > 0 ? runApproval.nodeTypes.join(', ') : 'No typed nodes detected'}</span>
+            </div>
+            <div className="gcp-experiment-approval-warning">
+              This executes your live graph with real side effects — file writes, network
+              calls, GPU time. Training runs can take a long time; progress streams into
+              this panel and Stop cancels the run.
+            </div>
+            <div className="gcp-experiment-approval-actions">
+              <button className="gcp-approval-secondary" onClick={() => handleRunDecision(false)} autoFocus>
+                Cancel
+              </button>
+              <button className="gcp-approval-primary" onClick={() => handleRunDecision(true)}>
+                Run graph
               </button>
             </div>
           </div>

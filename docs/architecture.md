@@ -49,7 +49,7 @@ Each user message starts a bounded tool-using turn:
 
 1. The plugin builds a system prompt from a compact installed-node catalog and a schema-redacted snapshot of the active graph.
 2. It streams the model response through CodefyUI's `/api/llm/chat` proxy.
-3. The model can inspect the latest graph, apply validated `GraphOp` batches to the canvas, research parts of a large node catalog, or run an isolated experiment study.
+3. The model can inspect the latest graph, apply validated `GraphOp` batches to the canvas, research parts of a large node catalog, execute the live canvas graph after user confirmation, or run an isolated experiment study.
 4. Graph-tool results are schema/fail-closed redacted before they return to the model. The original arguments of a provider-generated tool call stay only in the active provider/tool execution path.
 5. When a graph-editing answer tries to finish, a runnability gate allows up to two validation-driven corrective rounds. If the live graph remains invalid, the turn reports blocked/invalid instead of accepting success.
 6. Completed chat turns, compact experiment summaries, and integrity-checked portable bundles are stored through the plugin's namespaced browser storage.
@@ -78,6 +78,17 @@ snapshot active graph
 
 Graph isolation prevents candidate operations from changing the canvas. It is **not a general sandbox**: a node that writes a file, calls a service, or mutates some other external resource can still have that side effect during execution.
 
+## Live graph runs (`run_graph`)
+
+When the user asks to run, train, or evaluate their graph, the agent can execute the **live canvas graph** — the same run the editor's own Run action performs, with real side effects:
+
+1. server-side validation must pass first;
+2. the user confirms an approval card (node/edge counts, node types, time cap, side-effect warning), guarded against concurrent graph edits exactly like experiment approval;
+3. the graph executes over `/ws/execution`; node statuses and live training progress (loss, epochs) stream into the panel's status bar;
+4. the tool returns a compact outcome: final status, per-node scalar/string output summaries, last progress values, `metric` series tails, log text tail, and per-node errors.
+
+Long training runs are the expected case: one run at a time, a default 6-hour wall-clock cap (adjustable up to 12 hours), and cancellation from the panel's Stop control. Host generations differ in run ownership — on current CodefyUI `main` runs are server-owned (closing the socket does **not** stop them; an explicit `cancel` action does), while on 1.3.0 the socket owns the run (closing cancels). Cancellation therefore sends `{action: "cancel"}` first and then closes the socket, which stops the run on both generations. Reattaching to a run after a page reload is not implemented yet; on current hosts the run itself survives, and its events remain queryable through the host's run APIs.
+
 ## CodefyUI contract boundary
 
 The minimum supported host is CodefyUI **1.3.0**. The table separates that released contract from features found on CodefyUI `main` when this page was checked on **2026-07-14** (`4260585`). Graph Copilot is intentionally implemented against the 1.3.0 subset.
@@ -91,12 +102,14 @@ The minimum supported host is CodefyUI **1.3.0**. The table separates that relea
 | `api.storage` | Namespaced `get`, `set`, `remove` | Same | v1 |
 | `api.nodes` | Not present | Additive `registerRenderer` custom node-body API | Not required |
 
-The experiment runner also uses released 1.3.0 CodefyUI endpoints that are outside the JavaScript object itself:
+The experiment runner and the live-run tool also use released 1.3.0 CodefyUI endpoints that are outside the JavaScript object itself:
 
 - `POST /api/graph/validate` for authoritative graph validation;
 - `GET /api/auth/bootstrap` to obtain the WebSocket session token;
-- `/ws/execution` with `action: "execute"`, an unsaved serialized graph, a unique `run_id`/`graph_id`, `record_outputs: false`, and `weights_persistent: false`;
-- streamed `node_status`, `execution_complete`, and execution-error messages.
+- `/ws/execution` with `action: "execute"` — experiments send an unsaved candidate clone with `record_outputs: false` and `weights_persistent: false`; live runs send the canvas graph with `record_outputs: false` and `weights_persistent: true`;
+- streamed `node_status`, `execution_complete`, and execution-error messages, plus batched `metric` events on newer hosts.
+
+`node_status` payloads changed shape between host generations: 1.3.0 put per-port summaries on `output_summary` and training frames on `progress`, while current hosts ship a typed `outputs` entry list (`progress`, `tensor_summary`, `text`, media kinds). The plugin normalizes both shapes through one parser (`ui/src/agent/wireOutputs.ts`), so experiment metrics and run outcomes work against either generation.
 
 These are existing CodefyUI core services. Graph Copilot does not register new endpoints.
 
@@ -116,6 +129,8 @@ These are existing CodefyUI core services. Graph Copilot does not register new e
 | `ui/src/agent/loop.ts` | Tool schemas, multi-round agent loop, tool dispatch, and turn persistence callbacks |
 | `ui/src/agent/prompt.ts` | Graph/experiment policy and evidence-aware research instructions |
 | `ui/src/agent/experiments.ts` | Clone, mutate, validate, execute, measure, rank, optional promotion, and browser-local experiment summaries |
+| `ui/src/agent/runGraph.ts` | Live canvas-graph execution over `/ws/execution`: streaming progress, cancel/timeout handling, compact run outcomes |
+| `ui/src/agent/wireOutputs.ts` | Normalizes `node_status` payloads across host generations (1.3.0 `output_summary`/`progress` vs current typed `outputs` entries) |
 | `ui/src/agent/optimizer.ts` | Strict complete-grid and versioned seeded-random parameter-plan compiler |
 | `ui/src/agent/experimentAnalysis.ts` | Descriptive intervals/effect sizes plus formula-safe CSV and evidence-labeled Markdown exports |
 | `ui/src/agent/studyBundle.ts` | Strict portable schema, canonical JSON, and SHA-256 creation/verification |

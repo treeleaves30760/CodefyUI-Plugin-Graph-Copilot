@@ -16,7 +16,7 @@ The present host has four hard boundaries:
 
 - plugin discovery loads a frontend entry and node packages, but no backend lifecycle or job handler;
 - the frontend graph API targets only the active tab and exposes no tab identity, revision, tab creation, or atomic compare-and-swap edit;
-- `/ws/execution` owns an in-memory task for one socket and cancels it when that socket disconnects;
+- on CodefyUI 1.3.0, `/ws/execution` owns an in-memory task for one socket and cancels it when that socket disconnects; current `main` moves runs into a server-owned run service with durable events, attach/detach, and an explicit cancel action — which narrows this gap but still provides no plugin-scoped job identity, budgets, or checkpointed resume;
 - existing persisted runs belong to published applications, while full execution outputs use a small in-memory cache.
 
 Consequently, this repository keeps a bounded browser engine as its compatibility path. It must not advertise that engine as a durable backend queue.

@@ -37,8 +37,15 @@ vi.mock('./experiments', async (importOriginal) => {
   return { ...actual, runGraphExperiments: vi.fn() };
 });
 
+vi.mock('./runGraph', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./runGraph')>();
+  return { ...actual, runLiveGraph: vi.fn() };
+});
+
 import { streamChat } from '../llm/client';
 import { runGraphExperiments } from './experiments';
+import { runLiveGraph } from './runGraph';
+import type { RunGraphOutcome } from './runGraph';
 import {
   MAX_TOOL_ROUNDS,
   MAX_VALIDATION_NUDGES,
@@ -1785,5 +1792,183 @@ describe('runTurn — attachments', () => {
     const histUser = body.messages[1]; // system is [0]
     expect(histUser.role).toBe('user');
     expect(Array.isArray(histUser.content)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// run_graph tool
+// ---------------------------------------------------------------------------
+
+describe('run_graph tool', () => {
+  const RUN_OUTCOME: RunGraphOutcome = {
+    status: 'complete',
+    durationMs: 65_000,
+    runId: 'run-1',
+    nodeErrors: {},
+    completedNodes: 1,
+    totalNodes: 1,
+    outputs: { 'TrainingLoop.metrics': 0.5 },
+    finalProgress: { 'TrainingLoop.loss': 1.2 },
+    metrics: { 'loop/loss': 1.1 },
+    textTail: '',
+  };
+
+  function scriptOneRun(args: Record<string, unknown> = { reason: 'Train the model' }): void {
+    scriptStreamChat([
+      { done: makeDoneToolUse('t-run', 'run_graph', args) },
+      { done: makeDoneEnd('done') },
+    ]);
+  }
+
+  function toolResult(state: CallbackState): Record<string, unknown> {
+    const toolTurn = (state.committed ?? []).find((turn) => turn.role === 'tool');
+    expect(toolTurn).toBeDefined();
+    return JSON.parse(toolTurn!.content) as Record<string, unknown>;
+  }
+
+  beforeEach(() => {
+    (runLiveGraph as Mock).mockReset();
+    (runLiveGraph as Mock).mockResolvedValue({ ...RUN_OUTCOME });
+  });
+
+  it('runs the live graph after approval and reports a compact outcome', async () => {
+    scriptOneRun();
+    const api = makeFakeApi();
+    const state = makeCallbacks();
+    const approvals: unknown[] = [];
+    state.cbs.onRunApproval = async (request) => {
+      approvals.push(request);
+      return true;
+    };
+    state.cbs.onRunProgress = () => {};
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'train it', callbacks: state.cbs });
+
+    expect(runLiveGraph).toHaveBeenCalledTimes(1);
+    const opts = (runLiveGraph as Mock).mock.calls[0][1] as Record<string, unknown>;
+    expect(opts.timeoutMs).toBe(360 * 60_000);
+    expect(typeof opts.onProgress).toBe('function');
+
+    expect(approvals).toHaveLength(1);
+    const approval = approvals[0] as Record<string, unknown>;
+    expect(approval.reason).toBe('Train the model');
+    expect(approval.nodeCount).toBe(1);
+    expect(approval.nodeTypes).toEqual(['Conv2d']);
+    expect(approval.timeoutMinutes).toBe(360);
+
+    const parsed = toolResult(state);
+    expect(parsed.status).toBe('complete');
+    expect(parsed.duration_s).toBe(65);
+    expect(parsed.outputs).toEqual({ 'TrainingLoop.metrics': 0.5 });
+    expect(parsed.textTail).toBeUndefined();
+    expect(parsed.text_tail).toBeUndefined();
+  });
+
+  it('clamps timeout_minutes into the supported range', async () => {
+    scriptOneRun({ reason: 'Long training', timeout_minutes: 100_000 });
+    const api = makeFakeApi();
+    const state = makeCallbacks();
+    state.cbs.onRunApproval = async () => true;
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    const opts = (runLiveGraph as Mock).mock.calls[0][1] as Record<string, unknown>;
+    expect(opts.timeoutMs).toBe(720 * 60_000);
+  });
+
+  it('refuses to run an invalid graph and never asks for approval', async () => {
+    scriptOneRun();
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ valid: false, errors: ['missing required input'] }),
+    });
+    const state = makeCallbacks();
+    const approvalSpy = vi.fn(async () => true);
+    state.cbs.onRunApproval = approvalSpy;
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    expect(approvalSpy).not.toHaveBeenCalled();
+    expect(runLiveGraph).not.toHaveBeenCalled();
+    const parsed = toolResult(state);
+    expect(String(parsed.error)).toContain('not runnable');
+    expect(parsed.errors).toEqual(['missing required input']);
+  });
+
+  it('reports a declined approval as cancelled without executing', async () => {
+    scriptOneRun();
+    const api = makeFakeApi();
+    const state = makeCallbacks();
+    state.cbs.onRunApproval = async () => false;
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    expect(runLiveGraph).not.toHaveBeenCalled();
+    const parsed = toolResult(state);
+    expect(parsed.cancelled).toBe(true);
+  });
+
+  it('errors when the client provides no run approval callback', async () => {
+    scriptOneRun();
+    const api = makeFakeApi();
+    const state = makeCallbacks();
+    delete (state.cbs as Partial<TurnCallbacks>).onRunApproval;
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    expect(runLiveGraph).not.toHaveBeenCalled();
+    const parsed = toolResult(state);
+    expect(String(parsed.error)).toContain('interactive user confirmation');
+  });
+
+  it('asks for a replan when the graph changes while approval is open', async () => {
+    scriptOneRun();
+    const api = makeFakeApi();
+    let graphChanged: () => void = () => {};
+    (api.graph.onGraphChanged as Mock).mockImplementation((cb: () => void) => {
+      graphChanged = cb;
+      return () => {};
+    });
+    const state = makeCallbacks();
+    state.cbs.onRunApproval = async () => {
+      graphChanged();
+      return true;
+    };
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    expect(runLiveGraph).not.toHaveBeenCalled();
+    const parsed = toolResult(state);
+    expect(parsed.cancelled).toBe(true);
+    expect(parsed.replan).toBe(true);
+  });
+
+  it('releases the single-flight guard after a run completes', async () => {
+    scriptStreamChat([
+      { done: makeDoneToolUse('t-run-1', 'run_graph', { reason: 'first' }) },
+      { done: makeDoneToolUse('t-run-2', 'run_graph', { reason: 'second' }) },
+      { done: makeDoneEnd('done') },
+    ]);
+    const api = makeFakeApi();
+    const state = makeCallbacks();
+    state.cbs.onRunApproval = async () => true;
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    expect(runLiveGraph).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces the text tail when the run produced log output', async () => {
+    (runLiveGraph as Mock).mockResolvedValue({ ...RUN_OUTCOME, textTail: 'final loss 1.2' });
+    scriptOneRun();
+    const api = makeFakeApi();
+    const state = makeCallbacks();
+    state.cbs.onRunApproval = async () => true;
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(parsed.text_tail).toBe('final loss 1.2');
   });
 });
