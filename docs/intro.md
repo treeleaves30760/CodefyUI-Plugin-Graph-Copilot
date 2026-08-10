@@ -26,7 +26,7 @@ Planning and experiment coordination run in your browser. CodefyUI's existing ba
 - **Attach files** — add images, PDFs, text, or code to a message. Text and PDFs are extracted into the prompt; images are sent as multimodal content to vision-capable models. See [Attachments](./attachments.md).
 - **Keep conversation history** — resume a prior chat from browser-local history (capped at 50 conversations). See [Conversation history](./conversation-history.md).
 - **Choose a provider** — OpenAI API, OpenAI Codex (ChatGPT account), OpenRouter, Claude API, or a custom OpenAI-compatible endpoint. See [Provider setup](./provider-setup.md).
-- **Follow staged progress** — multi-round agent work renders as streamed messages and expandable tool stages, with cancellation and retry.
+- **Follow staged progress** — multi-round agent work renders as a wired step timeline: each round is its own message with numbered steps, live tool stages with per-tool durations, and a status bar narrating what the agent is doing right now, with cancellation and retry.
 
 ## Next steps
 

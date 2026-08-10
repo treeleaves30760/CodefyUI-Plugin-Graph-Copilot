@@ -207,7 +207,7 @@ describe('SettingsView', () => {
     const codexEffort = screen.getByRole('combobox', { name: /reasoning effort/i });
     expect(Array.from((codexEffort as HTMLSelectElement).options).map((o) => o.value))
       .toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max']);
-    expect(screen.getByRole('option', { name: /model default \(low\)/i })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /model default \(max\)/i })).toBeTruthy();
   });
 
   it('keeps the effort selector for the official gpt-5.6 Sol alias', () => {

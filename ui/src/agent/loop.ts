@@ -542,10 +542,11 @@ async function researchSubagent(
   signal?: AbortSignal,
 ): Promise<string> {
   const sys =
-    'You are a focused research sub-agent for CodefyUI Graph Copilot. Given a sub-task, ' +
-    'answer CONCISELY which node types (exact names from the index) are needed and how to wire ' +
-    'them (which output connects to which input). List node names + a one-line wiring plan. ' +
-    'No preamble, no code.\n\n## Node index\n' + indexText;
+    'You are a focused research sub-agent for CodefyUI Graph Copilot. Answer ONE sub-question ' +
+    'about building a node graph, using ONLY node types that appear in the index below (exact ' +
+    'names; if nothing in the index fits, say so instead of inventing a type). Answer with: ' +
+    '(1) the node types needed, (2) a one-line wiring plan (which output feeds which input), ' +
+    '(3) any params worth setting. CONCISE — no preamble, no code blocks.\n\n## Node index\n' + indexText;
   const messages: WireMessage[] = [
     { role: 'system', content: sys },
     { role: 'user', content: question },
@@ -969,6 +970,7 @@ export async function runTurn(opts: RunTurnOpts): Promise<void> {
 
       for (const toolCall of toolCalls) {
         const summaryCountBefore = roundOpsSummaries.length;
+        const toolStartedAt = Date.now();
         const rawResultContent = await executeTool(
           toolCall,
           api,
@@ -984,6 +986,7 @@ export async function runTurn(opts: RunTurnOpts): Promise<void> {
           role: 'tool',
           content: resultContent,
           tool_call_id: toolCall.id,
+          durationMs: Date.now() - toolStartedAt,
         });
         toolResultWireMsgs.push({
           role: 'tool',

@@ -42,7 +42,9 @@ Custom OpenAI-compatible endpoints are never queried automatically because an ar
 
 ## Reasoning effort
 
-When the host catalog advertises reasoning metadata, Settings shows a reasoning-effort selector and sends the chosen value as `reasoning_effort`. First-party OpenAI requests can use `none`, `low`, `medium`, `high`, `xhigh`, or `max` when the selected model supports them. The Codex fallback offers `low`, `medium`, `high`, `xhigh`, and `max`; Sol defaults to `low`, while Terra and Luna default to `medium`.
+When the host catalog advertises reasoning metadata, the effort control appears in two places: a quick chip in the chat composer (click the model name to switch effort without leaving the conversation) and the selector in Settings. Both send the chosen value as `reasoning_effort`. First-party OpenAI requests can use `none`, `low`, `medium`, `high`, `xhigh`, or `max` when the selected model supports them. The Codex fallback offers `low`, `medium`, `high`, `xhigh`, and `max`; Sol defaults to `max`, while Terra and Luna default to `medium`.
+
+Out of the box, the Codex provider is pinned to **GPT-5.6 Sol at `max` effort** — Graph Copilot is an agent workbench, so it defaults to the strongest configuration and lets you dial effort down per conversation. The value is still gated on host capability: nothing is sent until the host confirms `reasoning_effort` support for the selected model.
 
 Codex **does not expose `ultra`**. Ultra is a product-level multi-agent/delegation mode, not a portable public value for a single request's `reasoning_effort`. Graph Copilot sends one request through CodefyUI and does not implement that orchestration contract, so showing or forwarding `ultra` would misrepresent what happens and may be rejected upstream.
 

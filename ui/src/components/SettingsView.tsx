@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { CodefyUIPluginAPI } from '../types/codefyui';
 import type { Settings } from '../state/settings';
-import { reconcileModelCatalogSettings } from '../state/settings';
+import { reconcileModelCatalogSettings, withReasoningEffort } from '../state/settings';
 import type { Provider } from '../llm/client';
 import { fetchModelCatalog, codexLogin, codexStatus, codexLogout } from '../llm/client';
 import type {
@@ -278,28 +278,13 @@ export function SettingsView({
   }
 
   function updateReasoningEffort(value: string) {
-    const current = settingsRef.current;
-    const reasoningEfforts = { ...current.reasoningEfforts };
-    if (value === '') {
-      delete reasoningEfforts[provider];
-    } else {
-      reasoningEfforts[provider] = value as ReasoningEffort;
-    }
-    const currentCapability = current.providerCapabilities?.[provider];
-    const nextCapability = currentCapability ? {
-      reasoningEffort: currentCapability.reasoningEffort,
-      richModelCatalog: currentCapability.richModelCatalog,
-      ...(value ? { reasoningModel: current.models[provider] ?? '' } : {}),
-    } : undefined;
-    updateSettings({
-      reasoningEfforts,
-      ...(nextCapability ? {
-        providerCapabilities: {
-          ...current.providerCapabilities,
-          [provider]: nextCapability,
-        },
-      } : {}),
-    });
+    const next = withReasoningEffort(
+      settingsRef.current,
+      provider,
+      value as ReasoningEffort | '',
+    );
+    settingsRef.current = next;
+    onChangeRef.current(next);
   }
 
   function updateKey(provKey: 'openai' | 'openrouter' | 'anthropic' | 'custom', value: string) {

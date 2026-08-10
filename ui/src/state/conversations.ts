@@ -22,6 +22,9 @@ export interface ChatTurn {
   content: string;
   tool_calls?: WireToolCall[];
   tool_call_id?: string;
+  /** Wall-clock execution time of a tool call, stamped on its result turn.
+   *  Display-only; never sent to the provider. */
+  durationMs?: number;
   /** Human-readable applied-ops chip shown under an assistant bubble. */
   opsSummary?: string;
   /** Files attached to a user turn (images/pdf/text). Persisted for display

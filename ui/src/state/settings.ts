@@ -57,7 +57,9 @@ export const DEFAULT_SETTINGS: Settings = {
     custom: '',
   },
   apiKeys: {},
-  reasoningEfforts: {},
+  // Codex ships pinned to GPT-5.6 Sol at max effort. The value is still sent
+  // only after the host confirms reasoning-effort support for the model.
+  reasoningEfforts: { 'openai-codex': 'max' },
   providerCapabilities: {},
   customBaseUrl: '',
 };
@@ -141,6 +143,40 @@ export function activeReasoningEffort(s: Settings): ReasoningEffort | undefined 
     return undefined;
   }
   return s.reasoningEfforts?.[s.provider];
+}
+
+/**
+ * Return a settings copy with the provider's reasoning effort set ('' clears
+ * it back to the model default). Marks the current model as the one whose
+ * effort support this session has confirmed, mirroring the Settings flow, so
+ * the choice takes effect immediately on the next send.
+ */
+export function withReasoningEffort(
+  s: Settings,
+  provider: Provider,
+  effort: ReasoningEffort | '',
+): Settings {
+  const reasoningEfforts = { ...s.reasoningEfforts };
+  if (effort === '') {
+    delete reasoningEfforts[provider];
+  } else {
+    reasoningEfforts[provider] = effort;
+  }
+  const capability = s.providerCapabilities?.[provider];
+  return {
+    ...s,
+    reasoningEfforts,
+    ...(capability ? {
+      providerCapabilities: {
+        ...s.providerCapabilities,
+        [provider]: {
+          reasoningEffort: capability.reasoningEffort,
+          richModelCatalog: capability.richModelCatalog,
+          ...(effort ? { reasoningModel: s.models[provider] ?? '' } : {}),
+        },
+      },
+    } : {}),
+  };
 }
 
 /**

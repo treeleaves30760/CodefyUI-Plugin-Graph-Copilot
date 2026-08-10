@@ -24,7 +24,7 @@ sidebar_label: 介紹
 - **研究 evidence**：保留逐次 scalar、descriptive interval、baseline effect size 與 failure，提供 CSV／evidence-labeled Markdown，但不把 pilot 說成證明。
 - **Portable studies**：完成研究會產生 secret-redacted bundle；import 會檢查 canonicalized semantic content 與 raw／derived evidence，採 preview-first、read-only。Candidate graph JSON 可把 captured redacted GraphOps 重新套到 baseline 後產生，不執行、不改畫布，但不是 exact execution replay。
 - **附件、歷史與多 provider**：支援圖片、PDF、文字、程式碼、最多 50 筆瀏覽器端對話，以及 OpenAI、Codex、OpenRouter、Claude 與 OpenAI-compatible endpoint。
-- **階段式進度**：串流顯示多輪 agent 訊息與可展開的 tool stage，支援取消與 retry。
+- **階段式進度**：多輪 agent 工作以接線式步驟時間軸呈現——每一輪是獨立訊息並標示步驟編號，tool stage 即時顯示執行狀態與耗時，狀態列同步敘述 agent 正在做什麼，支援取消與 retry。
 
 ## 下一步
 

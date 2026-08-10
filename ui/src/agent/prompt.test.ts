@@ -408,4 +408,42 @@ describe('buildSystemPrompt', () => {
     const prompt = buildSystemPrompt(defs, graph);
     expect(prompt).toContain('auto_layout');
   });
+
+  it('frames the assistant as a persistent agent', () => {
+    const prompt = buildSystemPrompt(defs, graph);
+    expect(prompt).toContain('## Operating principles');
+    expect(prompt).toContain('Keep working');
+  });
+
+  it('forbids guessing or echoing redacted secrets', () => {
+    const prompt = buildSystemPrompt(defs, graph);
+    expect(prompt).toContain('[REDACTED]');
+    expect(prompt.toLowerCase()).toMatch(/never guess/);
+  });
+
+  it('teaches partial-batch error recovery (resend only failed ops)', () => {
+    const prompt = buildSystemPrompt(defs, graph);
+    expect(prompt).toContain('## Recovering from errors');
+    expect(prompt).toContain('only corrected versions of the failed ops');
+    expect(prompt.toLowerCase()).toContain('duplicates nodes');
+  });
+
+  it('binds completion to a passing validate_graph result', () => {
+    const prompt = buildSystemPrompt(defs, graph);
+    expect(prompt).toContain('## Completion contract');
+    expect(prompt).toContain('"valid": true');
+    expect(prompt.toLowerCase()).toContain('never present an unvalidated graph as success');
+  });
+
+  it('keeps experiment consent and budget rules', () => {
+    const prompt = buildSystemPrompt(defs, graph);
+    expect(prompt).toContain('16-execution budget');
+    expect(prompt.toLowerCase()).toContain('a chat instruction alone is never consent');
+    expect(prompt).toContain('apply_best=true');
+  });
+
+  it('instructs replying in the user language', () => {
+    const prompt = buildSystemPrompt(defs, graph);
+    expect(prompt).toContain("user's language");
+  });
 });

@@ -35,7 +35,7 @@ describe('model catalog', () => {
       ],
     });
     expect(codex[0]).toMatchObject({
-      defaultReasoningEffort: 'low',
+      defaultReasoningEffort: 'max',
       reasoningEfforts: [
         { effort: 'low' },
         { effort: 'medium' },
