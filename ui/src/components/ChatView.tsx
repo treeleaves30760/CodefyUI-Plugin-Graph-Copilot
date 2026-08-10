@@ -11,6 +11,7 @@ import { classify, readFileAsAttachment, formatBytes } from '../state/attachment
 import { runTurn } from '../agent/loop';
 import type { ExperimentApprovalRequest, RunApprovalRequest } from '../agent/loop';
 import { formatRunStatusLine } from '../agent/runGraph';
+import { RunSparkline, appendLossPoint } from './RunSparkline';
 import { MessageBubble } from './MessageBubble';
 import { describeStage, groupTurns } from './turnStages';
 
@@ -179,6 +180,7 @@ export function ChatView({
   const [experimentApproval, setExperimentApproval] = useState<ExperimentApprovalRequest | null>(null);
   const [runApproval, setRunApproval] = useState<RunApprovalRequest | null>(null);
   const [runStatusLine, setRunStatusLine] = useState<string | null>(null);
+  const [runLossSeries, setRunLossSeries] = useState<number[]>([]);
 
   const listRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true); // stick to bottom unless the user scrolls up
@@ -378,6 +380,7 @@ export function ChatView({
               // A landed tool result ends any live run status; a still-running
               // run keeps re-setting the line with each progress event.
               setRunStatusLine(null);
+              setRunLossSeries([]);
             }
             setLiveTurns((prev) => [...prev, turn]);
           },
@@ -400,6 +403,11 @@ export function ChatView({
           },
           onRunProgress(update) {
             setRunStatusLine(formatRunStatusLine(update));
+            if (update.phase === 'connecting') {
+              setRunLossSeries([]);
+            } else {
+              setRunLossSeries((prev) => appendLossPoint(prev, update));
+            }
           },
           onTurnsCommitted(turns) {
             setStreamingText('');
@@ -420,6 +428,7 @@ export function ChatView({
             setExperimentApproval(null);
             setRunApproval(null);
             setRunStatusLine(null);
+            setRunLossSeries([]);
             setBusy(false);
             abortRef.current = null;
           },
@@ -894,6 +903,7 @@ export function ChatView({
             <div className="gcp-runbar" role="status" aria-label="Agent activity">
               <span className="gcp-runbar-pulse" aria-hidden="true" />
               <span className="gcp-runbar-phase">{runPhase}…</span>
+              {runLossSeries.length >= 2 && <RunSparkline series={runLossSeries} />}
               {liveStepCount > 0 && (
                 <span className="gcp-runbar-step">step {liveStepCount}</span>
               )}

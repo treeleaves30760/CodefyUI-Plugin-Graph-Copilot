@@ -84,7 +84,7 @@ When the user asks to run, train, or evaluate their graph, the agent can execute
 
 1. server-side validation must pass first;
 2. the user confirms an approval card (node/edge counts, node types, time cap, side-effect warning), guarded against concurrent graph edits exactly like experiment approval;
-3. the graph executes over `/ws/execution`; node statuses and live training progress (loss, epochs) stream into the panel's status bar;
+3. the graph executes over `/ws/execution`; node statuses and live training progress (loss, epochs) stream into the panel's status bar, with a live loss sparkline drawn from the streamed progress frames;
 4. the tool returns a compact outcome: final status, per-node scalar/string output summaries, last progress values, `metric` series tails, log text tail, and per-node errors.
 
 Long training runs are the expected case: one run at a time, a default 6-hour wall-clock cap (adjustable up to 12 hours), and cancellation from the panel's Stop control. Host generations differ in run ownership — on current CodefyUI `main` runs are server-owned (closing the socket does **not** stop them; an explicit `cancel` action does), while on 1.3.0 the socket owns the run (closing cancels). Cancellation therefore sends `{action: "cancel"}` first and then closes the socket, which stops the run on both generations. Reattaching to a run after a page reload is not implemented yet; on current hosts the run itself survives, and its events remain queryable through the host's run APIs.
