@@ -66,11 +66,46 @@ describe('normalizeNodeStatus — current typed outputs shape', () => {
         { output_kind: 'progress', progress: { event: 'batch', loss: 3.1 } },
         { output_kind: 'text', text: 'step logged' },
         { output_kind: 'progress', progress: { event: 'epoch', loss: 2.4 } },
-        { output_kind: 'image', port: 'plot', image: { data: 'AAAA' } },
       ],
     });
     expect(normalized.progress).toEqual({ event: 'epoch', loss: 2.4 });
     expect(normalized.texts).toEqual(['step logged']);
+  });
+
+  it('collects inline image entries as media (#310)', () => {
+    const normalized = normalizeNodeStatus({
+      outputs: [
+        { output_kind: 'image', port: 'plot', image: { data: 'AAAA', format: 'png' } },
+        { output_kind: 'image', image: { data: '' } }, // empty: dropped
+        { output_kind: 'image', image: { data: 'B'.repeat(200_000) } }, // oversize: dropped
+      ],
+    });
+    expect(normalized.media).toEqual([
+      { kind: 'image', data: 'AAAA', format: 'png', port: 'plot' },
+    ]);
+  });
+
+  it('collects video references and refuses off-origin urls (#310)', () => {
+    const normalized = normalizeNodeStatus({
+      outputs: [
+        {
+          output_kind: 'video',
+          port: 'video',
+          video: {
+            url: '/api/media/rollout.mp4', format: 'mp4',
+            fps: 10, frames: 240, width: 96, height: 96, bytes: 81234,
+          },
+        },
+        { output_kind: 'video', video: { url: 'https://evil.example/x.mp4', format: 'mp4' } },
+        { output_kind: 'video', video: { format: 'mp4' } }, // no url: dropped
+      ],
+    });
+    expect(normalized.media).toEqual([
+      {
+        kind: 'video', url: '/api/media/rollout.mp4', format: 'mp4',
+        port: 'video', fps: 10, frames: 240, width: 96, height: 96, bytes: 81234,
+      },
+    ]);
   });
 
   it('caps collected strings at 200 characters', () => {
@@ -85,7 +120,7 @@ describe('normalizeNodeStatus — current typed outputs shape', () => {
 
   it('never throws on malformed payloads', () => {
     expect(normalizeNodeStatus({})).toEqual({
-      scalars: {}, strings: {}, modelParams: {}, progress: null, texts: [],
+      scalars: {}, strings: {}, modelParams: {}, progress: null, texts: [], media: [],
     });
     expect(() => normalizeNodeStatus({
       outputs: [null, 42, 'nope', { output_kind: 'progress', progress: 'bad' }],
