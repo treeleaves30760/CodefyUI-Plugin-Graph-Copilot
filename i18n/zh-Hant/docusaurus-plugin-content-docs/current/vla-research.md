@@ -31,7 +31,7 @@ sidebar_label: VLA 與媒體
 - `head_type`（flow matching vs regression），資料完全相同；
 - `execute_k` — 後退視野：同一策略實測 2 → 46%、4 → 34%、整塊 8 → 20%，open-loop 誤差累積曲線變成單參數研究；
 - `instruction_mode: swapped` — 語言接地的量測；
-- `vision_stem`（`conv` vs `patchify`）——「early convolutions help transformers see」效應在此規模等於 46% 與約 24% 的差距；
+- `vision_stem`（`conv` vs `patchify`）——以及一個關於混淆變因的警示：在 1,200 回合／45 epochs 預算下的控制變因雙臂研究量到 patchify 領先（成功率 0.85 vs 0.45）——完整故事（包含這次 A/B 如何糾正我們自己先前的歸因）見[論文重現：Early conv stems](paper-early-convs)；
 - `demo_noise`、`chunk`、`flow_steps`、`flow_time_dist`（uniform vs pi0 式 beta），加上 LLM 波已開放的所有優化器/排程旋鈕。
 
 `chunk` 要在 `PushWorldDemos` 與 `VLAModel` 之間一致，`image_size` 要在 `PushWorldEnv` 與 `VLAModel` 之間一致；`validate_graph` 加上第一個訓練批次會大聲抓出不一致。
