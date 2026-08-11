@@ -11,6 +11,7 @@ import type { WireMessage, WireToolCall, DoneEvent, Provider } from '../llm/clie
 import { buildSystemPrompt, graphSnapshot, compactCatalog, compactIndex } from './prompt';
 import {
   MAX_EXPERIMENT_RUNS,
+  experimentRunTimeoutMs,
   getExperimentExecutionCount,
   runGraphExperiments,
 } from './experiments';
@@ -160,6 +161,10 @@ Each entry in "operations" is one GraphOp object; use these EXACT field names:
         },
         repetitions: { type: 'integer', minimum: 1, maximum: 5 },
         concurrency: { type: 'integer', minimum: 1, maximum: 2 },
+        timeout_minutes: {
+          type: 'integer', minimum: 1, maximum: 60,
+          description: 'Per-run wall-clock cap in minutes (default 10). Raise for training-process studies whose single runs are longer, e.g. small-LM ablations.',
+        },
         apply_best: { type: 'boolean' },
       },
       required: ['hypothesis', 'objective', 'variants'],
@@ -202,6 +207,10 @@ Each entry in "operations" is one GraphOp object; use these EXACT field names:
         include_baseline: { type: 'boolean' },
         repetitions: { type: 'integer', minimum: 1, maximum: 5 },
         concurrency: { type: 'integer', minimum: 1, maximum: 2 },
+        timeout_minutes: {
+          type: 'integer', minimum: 1, maximum: 60,
+          description: 'Per-run wall-clock cap in minutes (default 10). Raise for parameter searches over real training runs.',
+        },
         apply_best: { type: 'boolean' },
       },
       required: ['strategy', 'hypothesis', 'objective', 'bindings'],
@@ -219,6 +228,8 @@ export interface ExperimentApprovalRequest {
   repetitions: number;
   executionCount: number;
   concurrency: number;
+  /** Per-run wall-clock cap shown to the user (minutes). */
+  runTimeoutMinutes: number;
   applyBest: boolean;
   variants: Array<{ label: string; operations: string[] }>;
   nodeTypes: string[];
@@ -933,6 +944,7 @@ async function executeTool(
           repetitions: request.repetitions ?? 1,
           executionCount: plannedRuns,
           concurrency: request.concurrency ?? 1,
+          runTimeoutMinutes: Math.round(experimentRunTimeoutMs(request) / 60_000),
           applyBest: request.apply_best ?? false,
           variants: approvalRequest.variants.map((variant) => ({
             label: variant.label,

@@ -103,6 +103,7 @@ const TOP_LEVEL_KEYS = new Set([
   'include_baseline',
   'repetitions',
   'concurrency',
+  'timeout_minutes',
   'apply_best',
 ]);
 const OBJECTIVE_KEYS = new Set(['metric', 'direction']);
@@ -365,6 +366,7 @@ function parseInput(value: unknown): {
   objective: GraphExperimentRequest['objective'];
   repetitions: number;
   concurrency: number;
+  timeoutMinutes: number | undefined;
   includeBaseline: boolean;
   applyBest: boolean;
 } {
@@ -390,6 +392,9 @@ function parseInput(value: unknown): {
     objective: { metric, direction: objectiveRaw.direction },
     repetitions: boundedInteger(raw.repetitions, 1, 1, 5, 'optimizer.repetitions'),
     concurrency: boundedInteger(raw.concurrency, 1, 1, 2, 'optimizer.concurrency'),
+    timeoutMinutes: raw.timeout_minutes === undefined
+      ? undefined
+      : boundedInteger(raw.timeout_minutes, 10, 1, 60, 'optimizer.timeout_minutes'),
     includeBaseline: optionalBoolean(raw.include_baseline, true, 'optimizer.include_baseline'),
     applyBest: optionalBoolean(raw.apply_best, false, 'optimizer.apply_best'),
   };
@@ -541,6 +546,7 @@ export function compileParameterOptimizer(
     variants,
     repetitions: parsed.repetitions,
     concurrency: parsed.concurrency,
+    ...(parsed.timeoutMinutes !== undefined ? { timeout_minutes: parsed.timeoutMinutes } : {}),
     apply_best: parsed.applyBest,
     search: metadata,
   };

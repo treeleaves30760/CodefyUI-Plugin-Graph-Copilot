@@ -76,12 +76,23 @@ export interface GraphExperimentRequest {
   variants: ExperimentVariantInput[];
   repetitions?: number;
   concurrency?: number;
+  /** Per-run wall-clock cap in minutes, clamped to [1, 60]. Default 10.
+   * Raised for training-process studies (small-LM ablations) whose single
+   * runs legitimately exceed the interactive default. */
+  timeout_minutes?: number;
   /** Promote the deterministic winner only if the live graph still matches
    * the baseline captured before the study. */
   apply_best?: boolean;
   /** Exact deterministic planner output. Generated internally by the bounded
    * optimizer; direct experiment calls omit it. */
   search?: ExperimentSearchMetadata;
+}
+
+/** Clamp the requested per-run timeout into the supported window. */
+export function experimentRunTimeoutMs(request: GraphExperimentRequest): number {
+  const raw = request.timeout_minutes;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_RUN_TIMEOUT_MS;
+  return Math.min(60, Math.max(1, Math.round(raw))) * 60 * 1000;
 }
 
 export interface ExperimentRunRecord {
@@ -1385,7 +1396,9 @@ async function runGraphExperimentsTracked(
         return {
           variantId: variant.input.id,
           repetition: repetition + 1,
-          observation: await executeCandidateGraph(variant.graph, token, signal),
+          observation: await executeCandidateGraph(
+            variant.graph, token, signal, experimentRunTimeoutMs(request),
+          ),
         };
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') throw error;
