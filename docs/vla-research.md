@@ -31,7 +31,7 @@ Off-origin URLs in a tool result are refused at both parse sites (the wire norma
 - `head_type` (flow matching vs regression) on identical data;
 - `execute_k` — the receding horizon: measured 2 → 46%, 4 → 34%, full chunk 8 → 20% on one policy, so the open-loop compounding-error curve is a one-param study;
 - `instruction_mode: swapped` — the language-grounding measurement;
-- `vision_stem` (`conv` vs `patchify`) — the "early convolutions help transformers see" effect is the difference between a 46% and a ~24% policy at equal budget;
+- `vision_stem` (`conv` vs `patchify`) — and a caution about confounds: a controlled two-arm study at the 1,200-episode/45-epoch budget measured patchify AHEAD (0.85 vs 0.45 success) — see the [Early conv stems reproduction page](paper-early-convs) for the full story, including how the A/B corrected our own earlier attribution;
 - `demo_noise`, `chunk`, `flow_steps`, `flow_time_dist` (uniform vs pi0-style beta), plus every optimizer/schedule knob the LLM wave already exposed.
 
 Keep `chunk` equal between `PushWorldDemos` and `VLAModel`, and `image_size` equal between `PushWorldEnv` and `VLAModel`; `validate_graph` plus the first training batch catch mismatches loudly.

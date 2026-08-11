@@ -25,6 +25,17 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Paper Reproductions',
+      collapsed: false,
+      items: [
+        'paper-reproductions',
+        'paper-early-convs',
+        'paper-chinchilla',
+        'paper-flow-matching',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Reference',
       collapsed: false,
       items: ['architecture', 'backend-agent-contract', 'roadmap', 'development'],
