@@ -18,6 +18,7 @@ const sidebars: SidebarsConfig = {
         'graph-editing',
         'experiments-and-research',
         'llm-training-research',
+        'vla-research',
         'attachments',
         'conversation-history',
       ],

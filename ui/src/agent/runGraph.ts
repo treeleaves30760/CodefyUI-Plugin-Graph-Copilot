@@ -22,7 +22,7 @@ import {
   executionUrl,
   scrubExecutionCredential,
 } from './experiments';
-import { finiteNumber, normalizeNodeStatus } from './wireOutputs';
+import { finiteNumber, normalizeNodeStatus, type MediaOutput } from './wireOutputs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,6 +39,9 @@ const CANCEL_GRACE_MS = 5_000;
 /** Caps that keep the tool result token-lean. */
 const MAX_RESULT_ENTRIES = 60;
 const MAX_TEXT_TAIL_CHARS = 1_500;
+/** Media outputs kept per run (#310) — a run's clips and previews, not a
+ * gallery. Later entries are dropped, so the first nodes to finish win. */
+const MAX_MEDIA_ITEMS = 8;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,6 +78,15 @@ export interface RunGraphOutcome {
   metrics: Record<string, number>;
   /** Tail of log/text output (Print nodes etc.), oldest lines dropped. */
   textTail: string;
+  /** Renderable media the run produced (#310): video references (played by
+   * the panel via their same-origin /api/media URL) and small inline image
+   * previews. The tool result forwards references only, never bytes. */
+  media: RunMediaItem[];
+}
+
+export interface RunMediaItem extends MediaOutput {
+  /** Node key (`NodeType` when unique, else node id) that produced it. */
+  node: string;
 }
 
 export interface RunLiveGraphOptions {
@@ -202,6 +214,7 @@ export async function runLiveGraph(
     const nodeErrors: Record<string, string> = {};
     const terminalNodes = new Set<string>();
     const texts: string[] = [];
+    const media: RunMediaItem[] = [];
     let runId: string | undefined;
     let settled = false;
     let cancelRequested = false;
@@ -233,6 +246,7 @@ export async function runLiveGraph(
         finalProgress: capEntries(finalProgress),
         metrics: capEntries(metrics),
         textTail,
+        media,
       });
     };
 
@@ -347,6 +361,10 @@ export async function runLiveGraph(
           outputs[`${key}.${port}.params`] = value;
         }
         for (const text of normalized.texts) texts.push(text);
+        for (const item of normalized.media) {
+          if (media.length >= MAX_MEDIA_ITEMS) break;
+          media.push({ node: key, ...item });
+        }
         if (normalized.progress) {
           for (const [field, raw] of Object.entries(normalized.progress)) {
             const num = finiteNumber(raw);

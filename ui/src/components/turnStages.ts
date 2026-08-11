@@ -90,6 +90,37 @@ export interface StageDescription {
   status: StageStatus;
   /** Expandable detail text (result payload, errors, ...). */
   detail?: string;
+  /** Playable artifacts a run produced (#310) — rendered without expanding.
+   * Only same-origin references survive parsing, so a crafted tool result
+   * cannot point the panel at another host. */
+  media?: StageMedia[];
+}
+
+export interface StageMedia {
+  kind: 'video';
+  /** Same-origin URL under /api/media, host-served with a real mime. */
+  url: string;
+  format: string;
+  node?: string;
+}
+
+/** Extract renderable, same-origin media references from a run result. */
+function stageMedia(parsed: Record<string, unknown>): StageMedia[] {
+  const raw = Array.isArray(parsed.media) ? parsed.media : [];
+  const items: StageMedia[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const item = entry as Record<string, unknown>;
+    const url = typeof item.url === 'string' ? item.url : '';
+    if (item.kind !== 'video' || !url.startsWith('/')) continue;
+    items.push({
+      kind: 'video',
+      url,
+      format: typeof item.format === 'string' ? item.format : 'mp4',
+      ...(typeof item.node === 'string' && item.node ? { node: item.node } : {}),
+    });
+  }
+  return items;
 }
 
 const LABELS: Record<string, string> = {
@@ -303,11 +334,14 @@ function describeRunGraph(args: Record<string, unknown>, result?: ChatTurn): Sta
   if (typeof parsed.duration_s === 'number') {
     parts.push(formatDuration(parsed.duration_s * 1000));
   }
+  const media = stageMedia(parsed);
+  if (media.length) parts.push(`${media.length} clip${media.length > 1 ? 's' : ''}`);
   return {
     label,
     summary: parts.join(' · '),
     status: runStatus === 'complete' ? 'ok' : 'error',
     detail: prettyDetail(result.content),
+    ...(media.length ? { media } : {}),
   };
 }
 

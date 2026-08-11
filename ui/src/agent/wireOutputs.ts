@@ -6,14 +6,44 @@
  * (`{port: {value}}`) and live training frames on `message.progress`
  * (`{name: number}`). Current hosts ship a typed `outputs` entry list
  * instead: `{output_kind, <kind>: payload, port?}` with kinds `progress`,
- * `tensor_summary`, `text`, `image`, `chart`. The plugin supports both
- * generations, so every consumer parses through this module instead of
+ * `tensor_summary`, `text`, `image`, `chart`, `video`. The plugin supports
+ * both generations, so every consumer parses through this module instead of
  * reading raw message fields.
  */
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * One renderable media output. Two shapes arrive on the wire (#310):
+ * an `image` entry inlines base64 PNG bytes (`data`), a `video` entry is a
+ * REFERENCE (`url` served by the host's /api/media with a real
+ * Content-Type — the bytes never ride the event stream, whose per-event
+ * cap is far under a clip).
+ */
+export interface MediaOutput {
+  kind: 'image' | 'video';
+  /** Output port the payload came from, when the host named one. */
+  port?: string;
+  /** image: base64 (no data: prefix), capped — oversize payloads dropped. */
+  data?: string;
+  /** image subtype for a data URL, e.g. "png". */
+  format?: string;
+  /** video: same-origin URL (/api/media/...), playable directly. */
+  url?: string;
+  /** video metadata, forwarded verbatim when present. */
+  fps?: number;
+  frames?: number;
+  width?: number;
+  height?: number;
+  bytes?: number;
+}
+
+/** Inline images above this stay out of the parse — they would bloat both
+ * chat storage and (via the run outcome) the model's context. The host's
+ * previews are sized far under it. */
+const MAX_INLINE_IMAGE_CHARS = 96_000;
 
 export interface NormalizedNodeStatus {
   /** Per-port numeric values (finite numbers only), keyed by port name. */
@@ -26,6 +56,8 @@ export interface NormalizedNodeStatus {
   progress: Record<string, unknown> | null;
   /** Log/text lines (Print node output etc.). */
   texts: string[];
+  /** Renderable media outputs (#310): inline images, video references. */
+  media: MediaOutput[];
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +118,7 @@ export function normalizeNodeStatus(
     modelParams: {},
     progress: null,
     texts: [],
+    media: [],
   };
 
   // Legacy 1.3.0 shape: per-port summaries + live progress on the message.
@@ -118,8 +151,38 @@ export function normalizeNodeStatus(
       if (typeof entry.text === 'string' && entry.text.length > 0) {
         out.texts.push(entry.text);
       }
+    } else if (kind === 'image') {
+      const payload = asRecord(entry.image);
+      const data = payload && typeof payload.data === 'string' ? payload.data : '';
+      if (data && data.length <= MAX_INLINE_IMAGE_CHARS) {
+        out.media.push({
+          kind: 'image',
+          data,
+          format: payload && typeof payload.format === 'string' ? payload.format : 'png',
+          ...(typeof entry.port === 'string' && entry.port ? { port: entry.port } : {}),
+        });
+      }
+    } else if (kind === 'video') {
+      // #310: a reference dict — never bytes. Only same-origin relative
+      // URLs are kept: an absolute URL in a wire payload is not the host
+      // contract and will not be fetched.
+      const payload = asRecord(entry.video);
+      const url = payload && typeof payload.url === 'string' ? payload.url : '';
+      if (url && url.startsWith('/')) {
+        const media: MediaOutput = {
+          kind: 'video',
+          url,
+          format: payload && typeof payload.format === 'string' ? payload.format : 'mp4',
+          ...(typeof entry.port === 'string' && entry.port ? { port: entry.port } : {}),
+        };
+        for (const key of ['fps', 'frames', 'width', 'height', 'bytes'] as const) {
+          const num = finiteNumber(payload?.[key]);
+          if (num !== undefined) media[key] = num;
+        }
+        out.media.push(media);
+      }
     }
-    // image / chart / unknown kinds carry payloads the agent cannot use.
+    // chart / unknown kinds carry payloads the agent cannot use.
   }
 
   return out;

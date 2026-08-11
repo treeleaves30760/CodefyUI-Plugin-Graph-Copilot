@@ -111,6 +111,48 @@ describe('MessageBubble tool stages', () => {
     expect(container.querySelector('.gcp-stage')!.className).toContain('error');
   });
 
+  it('plays run-produced clips inline without expanding (#310)', () => {
+    const call = { id: 'tc-run', name: 'run_graph', arguments: { reason: 'r' } };
+    const stage = {
+      call,
+      result: {
+        role: 'tool' as const,
+        tool_call_id: 'tc-run',
+        content: JSON.stringify({
+          status: 'complete', completedNodes: 3, totalNodes: 3, duration_s: 40,
+          media: [
+            { node: 'VideoWrite', kind: 'video', format: 'mp4', url: '/api/media/rollout.mp4' },
+            { node: 'Evil', kind: 'video', format: 'mp4', url: 'https://evil.example/x.mp4' },
+          ],
+        }),
+      },
+    };
+    const { container } = render(
+      <MessageBubble turn={{ role: 'assistant', content: '', tool_calls: [call] }} stages={[stage]} />,
+    );
+    const clips = container.querySelectorAll('.gcp-stage-clip');
+    expect(clips).toHaveLength(1);
+    expect(clips[0].tagName).toBe('VIDEO');
+    expect(clips[0].getAttribute('src')).toBe('/api/media/rollout.mp4');
+    // a gif reference renders as an animated <img>, not a <video>
+    const gifStage = {
+      call: { id: 'tc-g', name: 'run_graph', arguments: {} },
+      result: {
+        role: 'tool' as const,
+        tool_call_id: 'tc-g',
+        content: JSON.stringify({
+          status: 'complete',
+          media: [{ kind: 'video', format: 'gif', url: '/api/media/demo.gif' }],
+        }),
+      },
+    };
+    const second = render(
+      <MessageBubble turn={{ role: 'assistant', content: '', tool_calls: [gifStage.call] }} stages={[gifStage]} />,
+    );
+    const gif = second.container.querySelector('.gcp-stage-clip');
+    expect(gif!.tagName).toBe('IMG');
+  });
+
   it('expands and collapses stage details on click', async () => {
     const stage = applyStage({
       result: {

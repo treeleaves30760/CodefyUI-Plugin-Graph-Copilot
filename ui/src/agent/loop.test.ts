@@ -1811,6 +1811,7 @@ describe('run_graph tool', () => {
     finalProgress: { 'TrainingLoop.loss': 1.2 },
     metrics: { 'loop/loss': 1.1 },
     textTail: '',
+    media: [],
   };
 
   function scriptOneRun(args: Record<string, unknown> = { reason: 'Train the model' }): void {
@@ -2038,5 +2039,40 @@ describe('run_graph tool', () => {
 
     const parsed = toolResult(state);
     expect(parsed.text_tail).toBe('final loss 1.2');
+  });
+
+  it('forwards media as references and never inlines image bytes (#310)', async () => {
+    (runLiveGraph as Mock).mockResolvedValue({
+      ...RUN_OUTCOME,
+      media: [
+        {
+          node: 'VideoWrite', port: 'video', kind: 'video', format: 'mp4',
+          url: '/api/media/rollout.mp4', fps: 10, frames: 240, bytes: 81234,
+        },
+        {
+          node: 'VideoWrite', port: 'preview', kind: 'image', format: 'png',
+          data: 'A'.repeat(20_000),
+        },
+      ],
+    });
+    scriptOneRun();
+    const api = makeFakeApi();
+    const state = makeCallbacks();
+    state.cbs.onRunApproval = async () => true;
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(parsed.media).toEqual([
+      {
+        node: 'VideoWrite', port: 'video', kind: 'video', format: 'mp4',
+        url: '/api/media/rollout.mp4', fps: 10, frames: 240, bytes: 81234,
+      },
+      {
+        node: 'VideoWrite', port: 'preview', kind: 'image', format: 'png',
+        inline_preview: true,
+      },
+    ]);
+    expect(JSON.stringify(parsed)).not.toContain('AAAA');
   });
 });

@@ -120,6 +120,32 @@ function ToolStageRow({ stage }: { stage: ToolStage }) {
         )}
         {expandable && <ChevronIcon open={open} />}
       </button>
+      {d.media && d.media.length > 0 && (
+        <div className="gcp-stage-media">
+          {d.media.map((m) => (
+            // #310: same-origin /api/media references, host-served with a
+            // real Content-Type. A gif is an animated image — browsers
+            // refuse it as a <video> source.
+            m.format === 'gif' ? (
+              <img
+                key={m.url}
+                className="gcp-stage-clip"
+                src={m.url}
+                alt={m.node ? `${m.node} output clip` : 'run output clip'}
+              />
+            ) : (
+              <video
+                key={m.url}
+                className="gcp-stage-clip"
+                src={m.url}
+                controls
+                loop
+                preload="metadata"
+              />
+            )
+          ))}
+        </div>
+      )}
       {open && d.detail && <pre className="gcp-stage-detail">{d.detail}</pre>}
     </div>
   );
