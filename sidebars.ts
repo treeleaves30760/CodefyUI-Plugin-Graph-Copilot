@@ -17,6 +17,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'graph-editing',
         'experiments-and-research',
+        'llm-training-research',
         'attachments',
         'conversation-history',
       ],
