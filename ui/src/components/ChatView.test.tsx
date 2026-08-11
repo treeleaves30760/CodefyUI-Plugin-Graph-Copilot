@@ -84,6 +84,7 @@ const APPROVAL_REQUEST: ExperimentApprovalRequest = {
   variantCount: 3,
   repetitions: 2,
   executionCount: 6,
+  runTimeoutMinutes: 10,
   concurrency: 1,
   applyBest: true,
   variants: [

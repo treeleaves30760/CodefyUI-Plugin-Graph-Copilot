@@ -499,3 +499,20 @@ describe('compileParameterOptimizer request validation', () => {
     expect(JSON.stringify([MODEL_DEFINITION])).toBe(beforeDefinitions);
   });
 });
+
+describe('timeout_minutes passthrough', () => {
+  it('forwards a bounded per-run timeout into the compiled request', () => {
+    const compiled = compileParameterOptimizer(
+      input({ timeout_minutes: 30 }), BASE_GRAPH, [MODEL_DEFINITION],
+    );
+    expect(compiled.request.timeout_minutes).toBe(30);
+  });
+
+  it('omits the field when not requested and rejects out-of-range values', () => {
+    const compiled = compileParameterOptimizer(input(), BASE_GRAPH, [MODEL_DEFINITION]);
+    expect('timeout_minutes' in compiled.request).toBe(false);
+    expect(() => compileParameterOptimizer(
+      input({ timeout_minutes: 600 }), BASE_GRAPH, [MODEL_DEFINITION],
+    )).toThrow(/timeout_minutes/);
+  });
+});

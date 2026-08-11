@@ -12,6 +12,7 @@ import {
   MAX_EXPERIMENT_VARIANTS,
   applyOperationsToClone,
   executeCandidateGraph,
+  experimentRunTimeoutMs,
   loadExperimentSessions,
   resolveObjectiveMetric,
   runGraphExperiments,
@@ -908,5 +909,19 @@ describe('experiment persistence', () => {
     await expect(saveExperimentSession(malformed.api, session('new'))).rejects.toThrow(/entry 1 is invalid/i);
     expect(malformed.api.storage.set).not.toHaveBeenCalled();
     expect(malformed.storage.get(EXPERIMENTS_STORAGE_KEY)).toContain('"keep"');
+  });
+});
+
+describe('experimentRunTimeoutMs', () => {
+  const base = request();
+  it('defaults to ten minutes', () => {
+    expect(experimentRunTimeoutMs(base)).toBe(10 * 60 * 1000);
+  });
+  it('clamps and rounds the requested minutes', () => {
+    expect(experimentRunTimeoutMs({ ...base, timeout_minutes: 45 })).toBe(45 * 60 * 1000);
+    expect(experimentRunTimeoutMs({ ...base, timeout_minutes: 0 })).toBe(1 * 60 * 1000);
+    expect(experimentRunTimeoutMs({ ...base, timeout_minutes: 999 })).toBe(60 * 60 * 1000);
+    expect(experimentRunTimeoutMs({ ...base, timeout_minutes: 2.6 })).toBe(3 * 60 * 1000);
+    expect(experimentRunTimeoutMs({ ...base, timeout_minutes: Number.NaN })).toBe(10 * 60 * 1000);
   });
 });

@@ -651,6 +651,7 @@ export function ChatView({
               <span>{experimentApproval.variantCount} variants</span>
               <span>{experimentApproval.repetitions} repetitions</span>
               <span>concurrency {experimentApproval.concurrency}</span>
+              <span>per-run cap {experimentApproval.runTimeoutMinutes} min</span>
               {experimentApproval.applyBest && <span>parameter winner may be applied</span>}
             </div>
             <div className="gcp-experiment-approval-warning">
