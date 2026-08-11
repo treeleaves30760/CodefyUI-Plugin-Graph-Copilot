@@ -106,7 +106,7 @@ The experiment runner and the live-run tool also use released 1.3.0 CodefyUI end
 
 - `POST /api/graph/validate` for authoritative graph validation;
 - `GET /api/auth/bootstrap` to obtain the WebSocket session token;
-- `/ws/execution` with `action: "execute"` — experiments send an unsaved candidate clone with `record_outputs: false` and `weights_persistent: false`; live runs send the canvas graph with `record_outputs: false` and `weights_persistent: true`;
+- `/ws/execution` with `action: "execute"` — experiments send an unsaved candidate clone with `record_outputs: false` and `weights_persistent: false`; live runs send the canvas graph with `record_outputs: false`, `weights_persistent: true`, and an explicit run-level `device` (the agent's choice, or the host default from `GET /api/system/devices` — without it, current hosts default an execute submission to CPU, which `device='auto'` nodes then follow);
 - streamed `node_status`, `execution_complete`, and execution-error messages, plus batched `metric` events on newer hosts.
 
 `node_status` payloads changed shape between host generations: 1.3.0 put per-port summaries on `output_summary` and training frames on `progress`, while current hosts ship a typed `outputs` entry list (`progress`, `tensor_summary`, `text`, media kinds). The plugin normalizes both shapes through one parser (`ui/src/agent/wireOutputs.ts`), so experiment metrics and run outcomes work against either generation.

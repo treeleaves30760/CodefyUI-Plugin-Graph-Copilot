@@ -95,7 +95,7 @@ Graph 隔離只保證候選 GraphOps 不會改動畫布，並不是通用 sandbo
 
 - `POST /api/graph/validate` 做權威驗證；
 - `GET /api/auth/bootstrap` 取得 WebSocket session token；
-- `/ws/execution` 的 `action: "execute"` — 實驗送 unsaved candidate clone，帶 `record_outputs: false` 與 `weights_persistent: false`；live run 送 canvas graph，帶 `record_outputs: false` 與 `weights_persistent: true`；
+- `/ws/execution` 的 `action: "execute"` — 實驗送 unsaved candidate clone，帶 `record_outputs: false` 與 `weights_persistent: false`；live run 送 canvas graph，帶 `record_outputs: false`、`weights_persistent: true` 與明確的 run-level `device`（agent 指定，否則用 `GET /api/system/devices` 的 host 預設 — 不帶的話現行 host 會把 execute 預設成 CPU，`device='auto'` 的節點會跟著走）；
 - 接收 `node_status`、`execution_complete` 與 execution error，較新 host 另有批次 `metric` 事件。
 
 `node_status` 的 payload 形狀在兩代 host 間不同：1.3.0 把 per-port summary 放在 `output_summary`、training frame 放在 `progress`；現行 host 改用 typed `outputs` entry list（`progress`、`tensor_summary`、`text` 與 media kinds）。外掛以單一 parser（`ui/src/agent/wireOutputs.ts`）同時支援兩種形狀，實驗 metrics 與 run 結果在任一代 host 都能運作。

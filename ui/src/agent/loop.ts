@@ -30,6 +30,7 @@ import { compileParameterOptimizer } from './optimizer';
 import {
   DEFAULT_RUN_TIMEOUT_MINUTES,
   MAX_RUN_TIMEOUT_MINUTES,
+  fetchDefaultDevice,
   runLiveGraph,
 } from './runGraph';
 import type { RunProgressUpdate } from './runGraph';
@@ -107,6 +108,11 @@ Each entry in "operations" is one GraphOp object; use these EXACT field names:
           minimum: 1,
           maximum: 720,
           description: 'Optional wall-clock cap in minutes (default 360). Pick generously for training runs.',
+        },
+        device: {
+          type: 'string',
+          enum: ['cpu', 'cuda', 'mps'],
+          description: 'Optional run-level compute device (what device="auto" nodes follow). Defaults to the host\'s preferred device — set this only when the user asked for a specific one.',
         },
       },
       required: ['reason'],
@@ -224,6 +230,9 @@ export interface RunApprovalRequest {
   edgeCount: number;
   nodeTypes: string[];
   timeoutMinutes: number;
+  /** Run-level compute device shown to the user; 'host default' when the
+   * host exposes no preference. */
+  device: string;
 }
 
 export interface TurnCallbacks {
@@ -714,6 +723,14 @@ async function executeTool(
       ? Math.round(args.timeout_minutes)
       : DEFAULT_RUN_TIMEOUT_MINUTES;
     const timeoutMinutes = Math.min(Math.max(rawTimeout, 1), MAX_RUN_TIMEOUT_MINUTES);
+    // Resolve the run-level device BEFORE approval so the card shows what
+    // will actually run. Without an explicit submission the host defaults
+    // the run to CPU, which device='auto' nodes then follow — a silent way
+    // to turn a GPU training run into a CPU crawl.
+    const requestedDevice = typeof args.device === 'string' && ['cpu', 'cuda', 'mps'].includes(args.device)
+      ? args.device
+      : undefined;
+    const device = requestedDevice ?? await fetchDefaultDevice(api, signal);
     if (signal?.aborted) {
       return JSON.stringify({ cancelled: true, error: 'Run cancelled before execution.' });
     }
@@ -757,6 +774,7 @@ async function executeTool(
             .filter((type): type is string => !!type && type !== 'note'),
         )],
         timeoutMinutes,
+        device: device ?? 'host default',
       });
     } catch (error) {
       if (signal?.aborted) {
@@ -789,11 +807,13 @@ async function executeTool(
       const outcome = await runLiveGraph(api, {
         signal,
         timeoutMs: timeoutMinutes * 60_000,
+        ...(device ? { device } : {}),
         onProgress: callbacks.onRunProgress,
       });
       const { durationMs, textTail, ...rest } = outcome;
       return JSON.stringify({
         ...rest,
+        ...(device ? { device } : {}),
         duration_s: Math.round(durationMs / 1000),
         ...(textTail ? { text_tail: textTail } : {}),
       });

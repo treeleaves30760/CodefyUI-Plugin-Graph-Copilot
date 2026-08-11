@@ -1855,6 +1855,9 @@ describe('run_graph tool', () => {
     expect(approval.nodeCount).toBe(1);
     expect(approval.nodeTypes).toEqual(['Conv2d']);
     expect(approval.timeoutMinutes).toBe(360);
+    // makeFakeApi's generic fetch mock returns no `default` field, so the
+    // resolved device falls back to the host-default label.
+    expect(approval.device).toBe('host default');
 
     const parsed = toolResult(state);
     expect(parsed.status).toBe('complete');
@@ -1874,6 +1877,50 @@ describe('run_graph tool', () => {
 
     const opts = (runLiveGraph as Mock).mock.calls[0][1] as Record<string, unknown>;
     expect(opts.timeoutMs).toBe(720 * 60_000);
+  });
+
+  it('resolves the host default device and passes it to the run', async () => {
+    scriptOneRun();
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/system/devices') {
+        return { ok: true, json: async () => ({ default: 'cuda', devices: [] }) };
+      }
+      return { ok: true, json: async () => ({ valid: true, errors: [] }) };
+    });
+    const state = makeCallbacks();
+    const approvals: Array<Record<string, unknown>> = [];
+    state.cbs.onRunApproval = async (request) => {
+      approvals.push(request as unknown as Record<string, unknown>);
+      return true;
+    };
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    expect(approvals[0].device).toBe('cuda');
+    const opts = (runLiveGraph as Mock).mock.calls[0][1] as Record<string, unknown>;
+    expect(opts.device).toBe('cuda');
+    const parsed = toolResult(state);
+    expect(parsed.device).toBe('cuda');
+  });
+
+  it('an explicit device argument overrides the host default', async () => {
+    scriptOneRun({ reason: 'CPU check', device: 'cpu' });
+    const api = makeFakeApi();
+    const state = makeCallbacks();
+    const approvals: Array<Record<string, unknown>> = [];
+    state.cbs.onRunApproval = async (request) => {
+      approvals.push(request as unknown as Record<string, unknown>);
+      return true;
+    };
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+    expect(approvals[0].device).toBe('cpu');
+    const opts = (runLiveGraph as Mock).mock.calls[0][1] as Record<string, unknown>;
+    expect(opts.device).toBe('cpu');
+    const urls = (api.http.fetch as Mock).mock.calls.map((call) => call[0]);
+    expect(urls).not.toContain('/api/system/devices');
   });
 
   it('refuses to run an invalid graph and never asks for approval', async () => {

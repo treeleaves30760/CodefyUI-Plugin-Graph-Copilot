@@ -3,6 +3,7 @@ import type { CodefyUIPluginAPI, SerializedGraph } from '../types/codefyui';
 import {
   DEFAULT_RUN_TIMEOUT_MINUTES,
   MAX_RUN_TIMEOUT_MINUTES,
+  fetchDefaultDevice,
   formatRunStatusLine,
   runLiveGraph,
 } from './runGraph';
@@ -69,7 +70,7 @@ class MockWebSocket {
   }
 }
 
-function fakeApi(): CodefyUIPluginAPI {
+function fakeApi(defaultDevice: string | null = 'cuda'): CodefyUIPluginAPI {
   return {
     apiVersion: 1,
     pluginId: 'graph-copilot',
@@ -84,6 +85,16 @@ function fakeApi(): CodefyUIPluginAPI {
       fetch: vi.fn(async (url: string) => {
         if (url === '/api/auth/bootstrap') {
           return { ok: true, status: 200, json: async () => ({ token: 'token-123' }) };
+        }
+        if (url === '/api/system/devices') {
+          if (defaultDevice === null) {
+            return { ok: false, status: 404, json: async () => ({}) };
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ default: defaultDevice, devices: [] }),
+          };
         }
         throw new Error(`unexpected URL ${url}`);
       }),
@@ -173,7 +184,27 @@ describe('runLiveGraph', () => {
     const execute = sentPayloads[0];
     expect(execute.record_outputs).toBe(false);
     expect(execute.weights_persistent).toBe(true);
+    expect(execute.device).toBe('cuda'); // host default from /api/system/devices
     expect((execute.nodes as unknown[]).length).toBe(3);
+  });
+
+  it('an explicit device overrides the host default', async () => {
+    socketBehavior = (socket) => {
+      queueMicrotask(() => socket.emit({ type: 'execution_complete' }));
+    };
+    const api = fakeApi('cuda');
+    await runLiveGraph(api, { timeoutMs: 60_000, device: 'cpu' });
+    expect(sentPayloads[0].device).toBe('cpu');
+    const urls = (api.http.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(urls).not.toContain('/api/system/devices');
+  });
+
+  it('omits the device field when the host has no devices endpoint', async () => {
+    socketBehavior = (socket) => {
+      queueMicrotask(() => socket.emit({ type: 'execution_complete' }));
+    };
+    await runLiveGraph(fakeApi(null), { timeoutMs: 60_000 });
+    expect('device' in sentPayloads[0]).toBe(false);
   });
 
   it('collects legacy 1.3.0 output_summary / progress message fields', async () => {
@@ -235,7 +266,8 @@ describe('runLiveGraph', () => {
         });
       }
       if (payload.action === 'cancel') {
-        expect(payload.run_id).toBe('run-c');
+        // No assertions in here: a throw would be swallowed by the
+        // implementation's send guard and the stop frame would never come.
         queueMicrotask(() => {
           socket.emit({ type: 'execution_stopped', reason: 'cancelled', run_id: 'run-c' });
         });
@@ -247,13 +279,34 @@ describe('runLiveGraph', () => {
       signal: controller.signal,
       timeoutMs: 60_000,
     });
-    await flushMicrotasks();
+    // Flush until the execute payload is on the wire so the abort exercises
+    // the running-run cancel path, not the pre-submit fast path; a few more
+    // ticks let the execution_start frame deliver the run id.
+    for (let i = 0; i < 40 && !sentPayloads.some((p) => p.action === 'execute'); i++) {
+      await Promise.resolve();
+    }
+    await flushMicrotasks(4);
     controller.abort();
     const outcome = await pending;
 
     expect(outcome.status).toBe('cancelled');
-    expect(sentPayloads.some((p) => p.action === 'cancel')).toBe(true);
+    const cancelPayload = sentPayloads.find((p) => p.action === 'cancel');
+    expect(cancelPayload).toBeDefined();
+    expect(cancelPayload!.run_id).toBe('run-c');
     expect(socketRef!.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it('aborting before the run is submitted finishes immediately as cancelled', async () => {
+    socketBehavior = () => {};
+    const controller = new AbortController();
+    const pending = runLiveGraph(fakeApi(), {
+      signal: controller.signal,
+      timeoutMs: 60_000,
+    });
+    controller.abort(); // before token/connect complete
+    const outcome = await pending;
+    expect(outcome.status).toBe('cancelled');
+    expect(sentPayloads.some((p) => p.action === 'execute')).toBe(false);
   });
 
   it('times out a silent run: sends cancel, then resolves as timeout', async () => {
@@ -334,5 +387,12 @@ describe('formatRunStatusLine', () => {
 
   it('constants stay in sane bounds', () => {
     expect(DEFAULT_RUN_TIMEOUT_MINUTES).toBeLessThanOrEqual(MAX_RUN_TIMEOUT_MINUTES);
+  });
+});
+
+describe('fetchDefaultDevice', () => {
+  it('returns the host default and tolerates missing endpoints', async () => {
+    expect(await fetchDefaultDevice(fakeApi('mps'))).toBe('mps');
+    expect(await fetchDefaultDevice(fakeApi(null))).toBeUndefined();
   });
 });

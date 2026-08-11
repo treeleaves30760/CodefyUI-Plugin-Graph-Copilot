@@ -701,6 +701,7 @@ export function ChatView({
             <div className="gcp-experiment-approval-facts">
               <span>{runApproval.nodeCount} node{runApproval.nodeCount === 1 ? '' : 's'}</span>
               <span>{runApproval.edgeCount} edge{runApproval.edgeCount === 1 ? '' : 's'}</span>
+              <span>device {runApproval.device}</span>
               <span>time cap {runApproval.timeoutMinutes} min</span>
             </div>
             <div className="gcp-experiment-approval-nodes">
