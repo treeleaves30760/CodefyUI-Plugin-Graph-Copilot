@@ -80,7 +80,31 @@ export interface RunGraphOutcome {
 export interface RunLiveGraphOptions {
   signal?: AbortSignal;
   timeoutMs: number;
+  /** Run-level compute device (what nodes with device='auto' follow). When
+   * omitted the host default from /api/system/devices is used; without that
+   * endpoint the field is left off the wire and the host's own fallback
+   * applies. */
+  device?: string;
   onProgress?: (update: RunProgressUpdate) => void;
+}
+
+/** The host's preferred compute device, or undefined when the endpoint is
+ * unavailable (older hosts). The editor's own Run submits its global device
+ * selector; the plugin mirrors the same source of truth. Without this, an
+ * execute submission defaults to CPU on current hosts — which silently
+ * turned a 200M-parameter GPU training run into a CPU crawl. */
+export async function fetchDefaultDevice(
+  api: CodefyUIPluginAPI,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  try {
+    const response = await api.http.fetch('/api/system/devices', { signal });
+    if (!response.ok) return undefined;
+    const body = await response.json() as { default?: unknown };
+    return typeof body.default === 'string' && body.default ? body.default : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +186,7 @@ export async function runLiveGraph(
   opts: RunLiveGraphOptions,
 ): Promise<RunGraphOutcome> {
   const { signal, timeoutMs, onProgress } = opts;
+  const device = opts.device ?? await fetchDefaultDevice(api, signal);
   const token = await executionToken(api, signal);
   const graph = executableGraph(api.graph.getGraph());
   const keyFor = nodeKeyResolver(graph);
@@ -181,6 +206,7 @@ export async function runLiveGraph(
     let settled = false;
     let cancelRequested = false;
     let cancelTimer: number | undefined;
+    let executeSent = false;
 
     const finish = (
       status: RunGraphOutcome['status'],
@@ -217,6 +243,15 @@ export async function runLiveGraph(
       if (settled) return;
       if (cancelRequested) return;
       cancelRequested = true;
+      // Nothing was submitted yet (still fetching the token / connecting):
+      // there is no server-side run to stop, so finish immediately instead
+      // of waiting out the cancel grace for an acknowledgement that cannot
+      // come.
+      if (!executeSent) {
+        pendingCancelStatus = finalStatus;
+        finish(finalStatus);
+        return;
+      }
       onProgress?.({
         phase: 'cancelling',
         elapsedMs: Date.now() - startedAt,
@@ -260,6 +295,7 @@ export async function runLiveGraph(
     });
 
     socket.onopen = () => {
+      if (settled || cancelRequested) return;
       socket.send(JSON.stringify({
         action: 'execute',
         nodes: graph.nodes,
@@ -267,7 +303,9 @@ export async function runLiveGraph(
         presets: graph.presets ?? [],
         record_outputs: false,
         weights_persistent: true,
+        ...(device ? { device } : {}),
       }));
+      executeSent = true;
     };
 
     socket.onmessage = (event) => {
