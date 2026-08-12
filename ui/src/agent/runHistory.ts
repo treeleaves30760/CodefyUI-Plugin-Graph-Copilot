@@ -378,5 +378,6 @@ export async function followRun(
   } catch {
     row = null;
   }
+  if (signal?.aborted) return { status: lastStatus, row: null, aborted: true };
   return { status: row?.status ?? lastStatus, row, aborted: false };
 }

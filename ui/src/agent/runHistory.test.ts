@@ -171,6 +171,21 @@ describe('followRun', () => {
     expect(outcome.aborted).toBe(true);
   });
 
+  it('returns aborted (row: null) when the signal fires during the final row fetch', async () => {
+    const controller = new AbortController();
+    const api = {
+      http: { fetch: vi.fn(async (url: string) => {
+        if (url.includes('/events')) return json({ status: 'succeeded', events: [], cursor: 0 });
+        controller.abort();
+        return json({ ...ROW, id: 'r', status: 'succeeded' });
+      }) },
+    };
+    const outcome = await followRun(api, { runId: 'r', waitS: 0, signal: controller.signal });
+    expect(outcome.aborted).toBe(true);
+    expect(outcome.row).toBeNull();
+    expect(outcome.status).toBe('succeeded');
+  });
+
   it('resolves with row:null when the run 404s (deleted)', async () => {
     const outcome = await followRun(httpApi({}), { runId: 'gone', waitS: 0 });
     expect(outcome.row).toBeNull();
