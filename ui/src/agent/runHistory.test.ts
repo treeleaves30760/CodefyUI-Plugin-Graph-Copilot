@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  cancelRunById, fetchRun, fetchRunArtifacts, fetchRunList,
+  cancelRunById, fetchRun, fetchRunArtifacts, fetchRunList, followRun,
   isTerminalRunStatus, parseRunRow, probeRunHistory, resetRunHistoryProbeForTests,
 } from './runHistory';
 
@@ -106,5 +106,74 @@ describe('fetchers', () => {
   it('cancelRunById returns response.ok and never throws', async () => {
     expect(await cancelRunById(httpApi({ '/api/runs/r/cancel': () => json({ cancelled: true }) }), 'r')).toBe(true);
     expect(await cancelRunById(httpApi({}), 'r')).toBe(false);
+  });
+});
+
+describe('followRun', () => {
+  const nodeEvent = (cursor: number, progress: Record<string, number>) => ({
+    cursor, type: 'node_status', ts: 't',
+    payload: { node_id: 'n1', status: 'progress', outputs: [{ output_kind: 'progress', progress }] },
+  });
+
+  it('replays pages, emits loss points, and resolves on terminal status + drained tail', async () => {
+    const pages = [
+      { status: 'running', events: [nodeEvent(1, { loss: 3 }), nodeEvent(2, { loss: 2 })], cursor: 2 },
+      { status: 'running', events: [{ cursor: 3, type: 'node_status', ts: 't', payload: { node_id: 'n1', status: 'completed' } }], cursor: 3 },
+      { status: 'succeeded', events: [{ cursor: 4, type: 'execution_complete', ts: 't', payload: {} }], cursor: 4 },
+      { status: 'succeeded', events: [], cursor: 4 },
+    ];
+    let call = 0;
+    const api = {
+      http: { fetch: vi.fn(async (url: string) => {
+        if (url.includes('/events')) return json(pages[Math.min(call++, pages.length - 1)]);
+        return json({ ...ROW, id: 'r', status: 'succeeded' });
+      }) },
+    };
+    const updates: number[] = [];
+    let completed = 0;
+    const outcome = await followRun(api, {
+      runId: 'r', waitS: 0,
+      onUpdate: (u) => { if (u.lossPoint !== undefined) updates.push(u.lossPoint); completed = u.completedNodes; },
+    });
+    expect(updates).toEqual([3, 2]);
+    expect(completed).toBe(1);
+    expect(outcome.status).toBe('succeeded');
+    expect(outcome.row?.runId).toBe('r');
+    expect(outcome.aborted).toBe(false);
+  });
+
+  it('signals connectionLost on a failed page and recovers on the next', async () => {
+    let call = 0;
+    const api = {
+      http: { fetch: vi.fn(async (url: string) => {
+        if (url.includes('/events')) {
+          call += 1;
+          if (call === 1) throw new Error('network down');
+          return json({ status: 'succeeded', events: [], cursor: 0 });
+        }
+        return json({ ...ROW, id: 'r', status: 'succeeded' });
+      }) },
+    };
+    const flags: boolean[] = [];
+    await followRun(api, { runId: 'r', waitS: 0, retryDelayMs: 1, onUpdate: (u) => flags.push(u.connectionLost) });
+    expect(flags).toContain(true);
+  });
+
+  it('returns aborted when the signal fires', async () => {
+    const controller = new AbortController();
+    const api = {
+      http: { fetch: vi.fn(async () => {
+        controller.abort();
+        return json({ status: 'running', events: [], cursor: 0 });
+      }) },
+    };
+    const outcome = await followRun(api, { runId: 'r', waitS: 0, signal: controller.signal });
+    expect(outcome.aborted).toBe(true);
+  });
+
+  it('resolves with row:null when the run 404s (deleted)', async () => {
+    const outcome = await followRun(httpApi({}), { runId: 'gone', waitS: 0 });
+    expect(outcome.row).toBeNull();
+    expect(outcome.aborted).toBe(false);
   });
 });

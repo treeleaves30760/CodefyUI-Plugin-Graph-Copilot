@@ -189,7 +189,7 @@ function capEntries<T extends number | string>(
 // ---------------------------------------------------------------------------
 
 /** Terminal node statuses (current hosts also emit "cached"/"interrupted"). */
-const TERMINAL_NODE_STATUSES = new Set([
+export const TERMINAL_NODE_STATUSES = new Set([
   'completed', 'cached', 'error', 'interrupted',
 ]);
 

@@ -7,6 +7,8 @@
  */
 
 import type { CodefyUIPluginAPI } from '../types/codefyui';
+import { lossFromProgress, normalizeNodeStatus } from './wireOutputs';
+import { TERMINAL_NODE_STATUSES } from './runGraph';
 
 type HttpApi = Pick<CodefyUIPluginAPI, 'http'>;
 
@@ -256,4 +258,125 @@ export async function cancelRunById(api: HttpApi, runId: string): Promise<boolea
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// followRun — cursor replay + long-poll follower
+// ---------------------------------------------------------------------------
+
+export interface FollowUpdate {
+  runStatus: string;
+  nodeId?: string;
+  nodeStatus?: string;
+  progress?: Record<string, unknown> | null;
+  lossPoint?: number;
+  completedNodes: number;
+  connectionLost: boolean;
+}
+
+export interface FollowOutcome {
+  status: string;
+  row: RunRow | null;
+  aborted: boolean;
+}
+
+/** setTimeout wrapped as a Promise that also resolves (early) on abort. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      signal?.removeEventListener('abort', done);
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+/**
+ * Replay a run's event log from `fromCursor` (default 0) via the host's
+ * long-poll events endpoint, then keep polling until the run reaches a
+ * terminal status AND a page comes back empty (the drained tail — a
+ * terminal status alone is not enough, in-flight events may still be on
+ * their way). `waitS` rides the long poll for free during replay: the host
+ * returns immediately whenever events exist, so a constant wait costs
+ * nothing until the caller is actually caught up.
+ *
+ * Transient fetch failures (network blips) are retried with capped
+ * exponential backoff rather than surfaced as an error — `onUpdate` fires
+ * once per failure with `connectionLost: true` so the UI can show a
+ * reconnecting state. A 404 (run deleted mid-follow) and an aborted signal
+ * both end the loop immediately rather than retrying.
+ */
+export async function followRun(
+  api: HttpApi,
+  opts: {
+    runId: string;
+    fromCursor?: number;
+    onUpdate?: (update: FollowUpdate) => void;
+    signal?: AbortSignal;
+    waitS?: number;
+    retryDelayMs?: number;
+  },
+): Promise<FollowOutcome> {
+  const { runId, onUpdate, signal } = opts;
+  const waitS = opts.waitS ?? 25;
+  const retryDelayMs = opts.retryDelayMs ?? 1000;
+  let cursor = opts.fromCursor ?? 0;
+  let lastStatus = '';
+  let failures = 0;
+  const terminalNodes = new Set<string>();
+
+  while (true) {
+    if (signal?.aborted) return { status: lastStatus, row: null, aborted: true };
+    let page: Record<string, unknown>;
+    try {
+      const response = await api.http.fetch(
+        `/api/runs/${encodeURIComponent(runId)}/events?cursor=${cursor}&wait=${waitS}&limit=500`,
+        { signal },
+      );
+      if (response.status === 404) return { status: lastStatus, row: null, aborted: false };
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      page = asRecord(await response.json()) ?? {};
+      failures = 0;
+    } catch {
+      if (signal?.aborted) return { status: lastStatus, row: null, aborted: true };
+      failures += 1;
+      onUpdate?.({ runStatus: lastStatus, completedNodes: terminalNodes.size, connectionLost: true });
+      await abortableDelay(Math.min(retryDelayMs * 2 ** Math.min(failures - 1, 3), 8 * retryDelayMs), signal);
+      continue;
+    }
+
+    if (typeof page.status === 'string' && page.status) lastStatus = page.status;
+    const events = Array.isArray(page.events) ? page.events : [];
+    for (const rawEvent of events) {
+      const event = asRecord(rawEvent);
+      if (!event || event.type !== 'node_status') continue;
+      const payload = asRecord(event.payload) ?? {};
+      const nodeId = typeof payload.node_id === 'string' ? payload.node_id : '';
+      const nodeStatus = typeof payload.status === 'string' ? payload.status : '';
+      if (nodeId && TERMINAL_NODE_STATUSES.has(nodeStatus)) terminalNodes.add(nodeId);
+      const normalized = normalizeNodeStatus(payload);
+      const lossPoint = lossFromProgress(normalized.progress);
+      onUpdate?.({
+        runStatus: lastStatus,
+        ...(nodeId ? { nodeId } : {}),
+        ...(nodeStatus ? { nodeStatus } : {}),
+        progress: normalized.progress,
+        ...(lossPoint !== undefined ? { lossPoint } : {}),
+        completedNodes: terminalNodes.size,
+        connectionLost: false,
+      });
+    }
+    if (typeof page.cursor === 'number') cursor = page.cursor;
+    if (isTerminalRunStatus(lastStatus) && events.length === 0) break;
+  }
+
+  let row: RunRow | null = null;
+  try {
+    row = await fetchRun(api, runId, signal);
+  } catch {
+    row = null;
+  }
+  return { status: row?.status ?? lastStatus, row, aborted: false };
 }
