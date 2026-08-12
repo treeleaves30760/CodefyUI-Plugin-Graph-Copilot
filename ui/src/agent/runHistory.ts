@@ -126,7 +126,7 @@ export function parseRunRow(raw: unknown): RunRow | null {
     runId: id,
     name: optionalString(row.name),
     status,
-    active: ACTIVE_RUN_STATUSES.has(status),
+    active: row.active === true,
     queuePosition: finiteNumber(row.queue_position),
     createdAt: optionalString(row.created_at),
     startedAt: startedAtStr,

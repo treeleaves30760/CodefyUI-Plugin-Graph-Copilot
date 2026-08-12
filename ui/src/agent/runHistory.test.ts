@@ -48,6 +48,16 @@ describe('parseRunRow', () => {
     expect(row.durationS).toBe(3660);
     expect(row.lastCursor).toBeNull();
   });
+  it('passes through active field from host (not derived from status)', () => {
+    const row = parseRunRow(ROW)!;
+    expect(row.active).toBe(false);
+  });
+  it('preserves active: false for queued runs (active is not status-derived)', () => {
+    const queuedRow = { ...ROW, id: 'run-q', status: 'queued', active: false };
+    const row = parseRunRow(queuedRow)!;
+    expect(row.active).toBe(false);
+    expect(row.status).toBe('queued');
+  });
   it('rejects rows without id or status', () => {
     expect(parseRunRow({ status: 'running' })).toBeNull();
     expect(parseRunRow({ id: 'x' })).toBeNull();
