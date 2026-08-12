@@ -22,7 +22,7 @@ import type { CodefyUIPluginAPI } from '../types/codefyui';
 import { DEFAULT_SETTINGS } from '../state/settings';
 import { resetRunHistoryProbeForTests } from '../agent/runHistory';
 import type { RunRow } from '../agent/runHistory';
-import { writeActiveRun } from '../agent/runPointer';
+import { readActiveRun, writeActiveRun } from '../agent/runPointer';
 
 vi.mock('./notify', () => ({ notifyRunFinished: vi.fn() }));
 
@@ -150,7 +150,9 @@ describe('RunReattachBanner', () => {
     fireEvent.click(screen.getByText('Ask the agent to summarize'));
 
     expect(onAskAgent).toHaveBeenCalledTimes(1);
-    expect(onAskAgent.mock.calls[0][0]).toContain('run-1');
+    expect(onAskAgent).toHaveBeenCalledWith(
+      'Summarize run run-1 with get_run and report its metrics exactly.',
+    );
     expect(store.has('active_run')).toBe(false);
     expect(container.firstChild).toBeNull();
   });
@@ -199,9 +201,15 @@ describe('RunReattachBanner', () => {
 
     expect(await screen.findByText('Run succeeded while you were away')).toBeInTheDocument();
     expect(notifyRunFinished).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(notifyRunFinished).mock.calls[0][1]).toMatchObject({
+    // Hand-derived, not computed via metricsSummary(): val_loss 2.9536 is a
+    // float -> .toFixed(4); 45s (00:00:00 -> 00:00:45) is under 90 -> "45s".
+    // Computing this from metricsSummary() itself would be a mirror
+    // assertion — it would still pass if metricsSummary's own formatting
+    // regressed, since both sides of the comparison would drift together.
+    expect(vi.mocked(notifyRunFinished).mock.calls[0][1]).toEqual({
       runId: 'run-1',
       status: 'succeeded',
+      detail: 'val_loss 2.9536 · 45s',
     });
   });
 
@@ -319,6 +327,38 @@ describe('RunReattachBanner', () => {
     expect(container.firstChild).toBeNull();
     expect(store.has('active_run')).toBe(false);
     expect(fetchMock.mock.calls.some(([callUrl]) => String(callUrl).includes('/cancel'))).toBe(false);
+  });
+
+  it('unmount aborts the follower but keeps the pointer (next mount re-offers)', async () => {
+    let eventsCall = 0;
+    const { api, store } = makeApi(async (url) => {
+      if (url.startsWith('/api/runs?limit=1')) return json({ runs: [], total: 0 });
+      if (url.includes('/events')) {
+        eventsCall += 1;
+        // The run is still training: the first page has a live progress
+        // event (never an empty tail), and every page after that hangs, the
+        // same way a real long poll would still be open when we unmount.
+        // Nothing here ever resolves via a timer.
+        if (eventsCall === 1) {
+          return json({ status: 'running', events: [nodeEvent(1, { loss: 2.5 })], cursor: 1 });
+        }
+        return new Promise<Response>(() => {});
+      }
+      if (url === '/api/runs/run-1') return json(runPayload({ status: 'running' }));
+      throw new Error(`unexpected url ${url}`);
+    });
+    writeActiveRun(api, POINTER);
+
+    const { unmount } = render(
+      <RunReattachBanner api={api} settings={DEFAULT_SETTINGS} onAskAgent={vi.fn()} />,
+    );
+    await screen.findByText('Run in progress (reattached)');
+
+    unmount();
+
+    expect(store.has('active_run')).toBe(true);
+    expect(readActiveRun(api)).not.toBeNull();
+    expect(readActiveRun(api)?.runId).toBe('run-1');
   });
 });
 
