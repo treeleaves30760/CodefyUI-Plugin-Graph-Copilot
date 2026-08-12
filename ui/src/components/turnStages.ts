@@ -132,6 +132,8 @@ const LABELS: Record<string, string> = {
   run_graph: 'Run graph',
   run_graph_experiments: 'Experiment study',
   optimize_graph_parameters: 'Parameter search',
+  list_runs: 'Reading run history',
+  get_run: 'Reading run details',
 };
 
 function parseJson(text: string): Record<string, unknown> | null {
@@ -345,6 +347,45 @@ function describeRunGraph(args: Record<string, unknown>, result?: ChatTurn): Sta
   };
 }
 
+function describeListRuns(args: Record<string, unknown>, result?: ChatTurn): StageDescription {
+  const label = LABELS.list_runs;
+  const summary = args.active_only === true ? 'active runs' : 'recent runs';
+  if (!result) return { label, summary, status: 'running' };
+
+  const parsed = parseJson(result.content);
+  if (!parsed || typeof parsed.error === 'string') {
+    return {
+      label,
+      summary: typeof parsed?.error === 'string' ? truncate(parsed.error, 120) : 'could not list runs',
+      status: 'error',
+      detail: prettyDetail(result.content),
+    };
+  }
+
+  const runs = Array.isArray(parsed.runs) ? parsed.runs : [];
+  return { label, summary: plural(runs.length, 'run'), status: 'ok', detail: prettyDetail(result.content) };
+}
+
+function describeGetRun(args: Record<string, unknown>, result?: ChatTurn): StageDescription {
+  const label = LABELS.get_run;
+  const runId = typeof args.run_id === 'string' ? args.run_id : '';
+  if (!result) return { label, summary: runId || 'run', status: 'running' };
+
+  const parsed = parseJson(result.content);
+  if (!parsed || typeof parsed.error === 'string') {
+    return {
+      label,
+      summary: typeof parsed?.error === 'string' ? truncate(parsed.error, 120) : 'could not fetch run',
+      status: 'error',
+      detail: prettyDetail(result.content),
+    };
+  }
+
+  const run = parsed.run && typeof parsed.run === 'object' ? (parsed.run as Record<string, unknown>) : {};
+  const status = typeof run.status === 'string' ? run.status : 'unknown';
+  return { label, summary: status, status: 'ok', detail: prettyDetail(result.content) };
+}
+
 function describeGeneric(call: WireToolCall, result?: ChatTurn): StageDescription {
   const label = LABELS[call.name] ?? call.name;
   if (!result) return { label, summary: 'running…', status: 'running' };
@@ -377,6 +418,10 @@ export function describeStage(stage: ToolStage): StageDescription {
       return describeExperiment(args, result);
     case 'optimize_graph_parameters':
       return describeOptimizer(args, result);
+    case 'list_runs':
+      return describeListRuns(args, result);
+    case 'get_run':
+      return describeGetRun(args, result);
     default:
       return describeGeneric(call, result);
   }

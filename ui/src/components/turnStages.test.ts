@@ -275,6 +275,65 @@ describe('describeStage', () => {
     expect(failed.summary).toContain('secret params');
   });
 
+  it('list_runs: shows a running caption based on active_only, then a run count', () => {
+    const call = { id: 'l1', name: 'list_runs', arguments: {} };
+    const running = describeStage({ call });
+    expect(running.label).toBe('Reading run history');
+    expect(running.summary).toBe('recent runs');
+
+    const activeOnlyRunning = describeStage({
+      call: { id: 'l2', name: 'list_runs', arguments: { active_only: true } },
+    });
+    expect(activeOnlyRunning.summary).toBe('active runs');
+
+    const done = describeStage({
+      call,
+      result: {
+        role: 'tool', tool_call_id: 'l1',
+        content: JSON.stringify({ total: 5, runs: [{ run_id: 'r1' }, { run_id: 'r2' }] }),
+      },
+    });
+    expect(done.status).toBe('ok');
+    expect(done.summary).toBe('2 runs');
+
+    const failed = describeStage({
+      call,
+      result: {
+        role: 'tool', tool_call_id: 'l1',
+        content: JSON.stringify({ error: 'Run history is unavailable: this CodefyUI host does not expose /api/runs' }),
+      },
+    });
+    expect(failed.status).toBe('error');
+    expect(failed.summary).toContain('Run history is unavailable');
+  });
+
+  it('get_run: shows the requested run id while running, then its fetched status', () => {
+    const call = { id: 'g1', name: 'get_run', arguments: { run_id: 'run-42' } };
+    const running = describeStage({ call });
+    expect(running.label).toBe('Reading run details');
+    expect(running.summary).toBe('run-42');
+
+    const done = describeStage({
+      call,
+      result: {
+        role: 'tool', tool_call_id: 'g1',
+        content: JSON.stringify({ run: { run_id: 'run-42', status: 'succeeded' }, artifacts: [] }),
+      },
+    });
+    expect(done.status).toBe('ok');
+    expect(done.summary).toBe('succeeded');
+
+    const failed = describeStage({
+      call,
+      result: {
+        role: 'tool', tool_call_id: 'g1',
+        content: JSON.stringify({ error: "run 'run-42' not found on this host." }),
+      },
+    });
+    expect(failed.status).toBe('error');
+    expect(failed.summary).toContain('not found');
+  });
+
   it('unknown tool: falls back to raw name and tolerates non-JSON content', () => {
     const call = { id: 'u1', name: 'mystery_tool', arguments: {} };
     const d = describeStage({ call, result: { role: 'tool', tool_call_id: 'u1', content: 'plain text' } });
