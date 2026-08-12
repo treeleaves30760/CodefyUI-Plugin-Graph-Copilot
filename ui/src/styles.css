@@ -964,6 +964,33 @@
 .gcp-retry-btn:focus-visible { outline: 2px solid var(--gcp-danger); outline-offset: 2px; }
 
 /* -------------------------------------------------------------------------- */
+/* Reattach banner — a background run this panel is tracking (#22)             */
+/* -------------------------------------------------------------------------- */
+
+.gcp-reattach { display: flex; align-items: flex-start; gap: 10px; margin: 10px 12px 0; padding: 10px 12px; border-radius: var(--gcp-r); border: 1px solid var(--gcp-border); background: var(--gcp-surface); animation: gcp-rise 200ms var(--gcp-ease) both; }
+.gcp-reattach-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.gcp-reattach-title { font-weight: 600; font-size: 12.5px; }
+.gcp-reattach-detail { font-size: 12px; opacity: 0.85; overflow-wrap: anywhere; }
+.gcp-reattach-reason { opacity: 0.7; }
+.gcp-reattach-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+.gcp-reattach-btn {
+  padding: 5px 12px;
+  border-radius: var(--gcp-r-sm);
+  border: 1px solid var(--gcp-border);
+  background: transparent;
+  color: var(--gcp-dim);
+  font-size: var(--gcp-fs-xs);
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--gcp-t-fast), color var(--gcp-t-fast), border-color var(--gcp-t-fast);
+  flex-shrink: 0;
+}
+.gcp-reattach-btn:hover { background: var(--gcp-hover); color: var(--gcp-text); }
+.gcp-reattach-btn:focus-visible { outline: 2px solid var(--gcp-focus); outline-offset: 2px; }
+.gcp-reattach-btn:disabled { opacity: 0.5; cursor: not-allowed; color: var(--gcp-disabled); border-color: var(--gcp-border-soft); }
+
+/* -------------------------------------------------------------------------- */
 /* Drag & drop overlay                                                          */
 /* -------------------------------------------------------------------------- */
 
