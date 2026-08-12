@@ -35,6 +35,13 @@ import {
   runLiveGraph,
 } from './runGraph';
 import type { RunProgressUpdate } from './runGraph';
+import {
+  fetchRun,
+  fetchRunArtifacts,
+  fetchRunList,
+  isTerminalRunStatus,
+  probeRunHistory,
+} from './runHistory';
 
 // ---------------------------------------------------------------------------
 // Constants & tool definitions
@@ -214,6 +221,28 @@ Each entry in "operations" is one GraphOp object; use these EXACT field names:
         apply_best: { type: 'boolean' },
       },
       required: ['strategy', 'hypothesis', 'objective', 'bindings'],
+    },
+  },
+  {
+    name: 'list_runs',
+    description:
+      'List recent graph runs on the CodefyUI host, newest first — INCLUDING runs the user started from the editor\'s own Run button. Each row: run_id, name, status (queued|running|succeeded|failed|cancelled|interrupted), queue_position (when queued), created_at, duration_s, error, and final_metrics (the last value of every metric series the run recorded, e.g. val_loss). Use this when asked what ran recently, whether something is still running, or which run to inspect; then use get_run for one run\'s detail. Requires a host with server-owned runs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Rows to return (default 10).' },
+        active_only: { type: 'boolean', description: 'Only queued/running runs.' },
+      },
+    },
+  },
+  {
+    name: 'get_run',
+    description:
+      'Fetch one run\'s server-side record by run_id: status, timing, error, final_metrics, and recorded artifacts (checkpoints etc.). This is the ground truth for "how did that run go" — report its numbers exactly; never reconstruct them from memory. Works for editor-started runs too.',
+    input_schema: {
+      type: 'object',
+      properties: { run_id: { type: 'string' } },
+      required: ['run_id'],
     },
   },
 ];
@@ -839,6 +868,74 @@ async function executeTool(
       return JSON.stringify({ error: `Run failed: ${String(error)}` });
     } finally {
       liveRunInFlight = false;
+    }
+  }
+
+  if (name === 'list_runs' || name === 'get_run') {
+    if (!(await probeRunHistory(api, signal))) {
+      return JSON.stringify({
+        error: 'Run history is unavailable: this CodefyUI host does not expose /api/runs (server-owned runs). Only results returned in this conversation are known.',
+      });
+    }
+  }
+
+  if (name === 'list_runs') {
+    const rawLimit = typeof args.limit === 'number' && Number.isFinite(args.limit)
+      ? Math.round(args.limit) : 10;
+    try {
+      const { runs, total } = await fetchRunList(api, {
+        limit: Math.min(Math.max(rawLimit, 1), 20), signal,
+      });
+      const filtered = args.active_only === true
+        ? runs.filter((run) => !isTerminalRunStatus(run.status))
+        : runs;
+      return JSON.stringify({
+        total,
+        runs: filtered.map((run) => ({
+          run_id: run.runId,
+          ...(run.name ? { name: run.name } : {}),
+          status: run.status,
+          active: run.active,
+          ...(run.queuePosition !== null ? { queue_position: run.queuePosition } : {}),
+          ...(run.createdAt ? { created_at: run.createdAt } : {}),
+          ...(run.durationS !== null ? { duration_s: run.durationS } : {}),
+          ...(run.error ? { error: run.error } : {}),
+          ...(Object.keys(run.finalMetrics).length ? { final_metrics: run.finalMetrics } : {}),
+        })),
+      });
+    } catch (error) {
+      return JSON.stringify({ error: `Could not list runs: ${String(error)}` });
+    }
+  }
+
+  if (name === 'get_run') {
+    const runId = typeof args.run_id === 'string' ? args.run_id.trim() : '';
+    if (!runId) return JSON.stringify({ error: 'get_run requires a non-empty "run_id".' });
+    try {
+      const run = await fetchRun(api, runId, signal);
+      if (!run) return JSON.stringify({ error: `run '${runId}' not found on this host.` });
+      const artifacts = await fetchRunArtifacts(api, runId, signal);
+      return JSON.stringify({
+        run: {
+          run_id: run.runId,
+          ...(run.name ? { name: run.name } : {}),
+          status: run.status,
+          active: run.active,
+          ...(run.createdAt ? { created_at: run.createdAt } : {}),
+          ...(run.startedAt ? { started_at: run.startedAt } : {}),
+          ...(run.finishedAt ? { finished_at: run.finishedAt } : {}),
+          ...(run.durationS !== null ? { duration_s: run.durationS } : {}),
+          ...(run.error ? { error: run.error } : {}),
+          final_metrics: run.finalMetrics,
+        },
+        artifacts: artifacts.map((artifact) => ({
+          kind: artifact.kind,
+          path: artifact.path,
+          ...(artifact.createdAt ? { created_at: artifact.createdAt } : {}),
+        })),
+      });
+    } catch (error) {
+      return JSON.stringify({ error: `Could not fetch run '${runId}': ${String(error)}` });
     }
   }
 

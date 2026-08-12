@@ -54,6 +54,7 @@ import {
   validateCurrentGraph,
 } from './loop';
 import type { ExperimentApprovalRequest, TurnCallbacks } from './loop';
+import { resetRunHistoryProbeForTests } from './runHistory';
 
 // ---------------------------------------------------------------------------
 // Scripted streamChat helper
@@ -2074,5 +2075,218 @@ describe('run_graph tool', () => {
       },
     ]);
     expect(JSON.stringify(parsed)).not.toContain('AAAA');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list_runs / get_run tools
+// ---------------------------------------------------------------------------
+
+describe('list_runs / get_run tools', () => {
+  // The probe caches a positive result module-wide (see runHistory.ts); reset
+  // it so "capability absent" tests are not poisoned by an earlier test's
+  // successful probe, and vice versa.
+  beforeEach(() => {
+    resetRunHistoryProbeForTests();
+  });
+
+  function scriptOneCall(name: string, args: Record<string, unknown> = {}): void {
+    scriptStreamChat([
+      { done: makeDoneToolUse('t-run-history', name, args) },
+      { done: makeDoneEnd('done') },
+    ]);
+  }
+
+  function toolResult(state: CallbackState): Record<string, unknown> {
+    const toolTurn = (state.committed ?? []).find((turn) => turn.role === 'tool');
+    expect(toolTurn).toBeDefined();
+    return JSON.parse(toolTurn!.content) as Record<string, unknown>;
+  }
+
+  const RUNS_LIST_PAYLOAD = {
+    total: 2,
+    runs: [
+      {
+        id: 'run-active', name: 'nightly-sweep', status: 'running', active: true,
+        queue_position: null, created_at: '2026-08-12T10:00:00Z',
+        started_at: '2026-08-12T10:00:05Z', finished_at: null,
+        error: null, final_metrics: { val_loss: 0.51 },
+      },
+      {
+        id: 'run-done', status: 'succeeded', active: false,
+        queue_position: null, created_at: '2026-08-12T09:00:00Z',
+        started_at: '2026-08-12T09:00:05Z', finished_at: '2026-08-12T09:10:05Z',
+        error: null, final_metrics: { val_loss: 0.31 },
+      },
+    ],
+  };
+
+  const RUN_ROW_PAYLOAD = {
+    id: 'run-done', name: 'nightly-sweep', status: 'succeeded', active: false,
+    queue_position: null, created_at: '2026-08-12T09:00:00Z',
+    started_at: '2026-08-12T09:00:05Z', finished_at: '2026-08-12T09:10:05Z',
+    error: null, final_metrics: { val_loss: 0.31 },
+  };
+
+  const ARTIFACTS_PAYLOAD = {
+    artifacts: [
+      { kind: 'checkpoint', path: '/runs/run-done/ckpt/final.pt', created_at: '2026-08-12T09:10:00Z' },
+      { kind: 'log', path: '/runs/run-done/train.log' },
+    ],
+  };
+
+  // -------------------------------------------------------------------------
+  // 1. Capability absent
+  // -------------------------------------------------------------------------
+
+  it('list_runs: reports run history unavailable when the host has no /api/runs', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({ ok: false, status: 404 });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs');
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'what ran recently?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(String(parsed.error)).toContain('Run history is unavailable');
+  });
+
+  it('get_run: reports run history unavailable when the host has no /api/runs', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({ ok: false, status: 404 });
+    const state = makeCallbacks();
+    scriptOneCall('get_run', { run_id: 'run-done' });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'how did run-done go?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(String(parsed.error)).toContain('Run history is unavailable');
+  });
+
+  // -------------------------------------------------------------------------
+  // 2. list_runs happy path (rows, active_only, limit clamp)
+  // -------------------------------------------------------------------------
+
+  it('list_runs: happy path — rows carry run_id/status/final_metrics, omitting absent optional fields', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+      if (url === '/api/runs?limit=10') return { ok: true, json: async () => RUNS_LIST_PAYLOAD };
+      return { ok: false, status: 404 };
+    });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs');
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'what ran recently?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(parsed.total).toBe(2);
+    expect(parsed.runs).toEqual([
+      {
+        run_id: 'run-active', name: 'nightly-sweep', status: 'running', active: true,
+        created_at: '2026-08-12T10:00:00Z', final_metrics: { val_loss: 0.51 },
+      },
+      {
+        run_id: 'run-done', status: 'succeeded', active: false,
+        created_at: '2026-08-12T09:00:00Z', duration_s: 600,
+        final_metrics: { val_loss: 0.31 },
+      },
+    ]);
+  });
+
+  it('list_runs: active_only filters to just the active run (total stays the server total)', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+      if (url === '/api/runs?limit=10') return { ok: true, json: async () => RUNS_LIST_PAYLOAD };
+      return { ok: false, status: 404 };
+    });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs', { active_only: true });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'what is still running?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(parsed.total).toBe(2);
+    const runs = parsed.runs as Array<Record<string, unknown>>;
+    expect(runs.map((run) => run.run_id)).toEqual(['run-active']);
+  });
+
+  it('list_runs: clamps an oversized limit down to 20', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({ ok: true, json: async () => ({ runs: [], total: 0 }) });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs', { limit: 999 });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'list', callbacks: state.cbs });
+
+    const urls = (api.http.fetch as Mock).mock.calls.map((call) => call[0]);
+    expect(urls).toContain('/api/runs?limit=20');
+  });
+
+  it('list_runs: clamps a sub-1 limit up to 1', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({ ok: true, json: async () => ({ runs: [], total: 0 }) });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs', { limit: -5 });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'list', callbacks: state.cbs });
+
+    const urls = (api.http.fetch as Mock).mock.calls.map((call) => call[0]);
+    expect(urls).toContain('/api/runs?limit=1');
+  });
+
+  // -------------------------------------------------------------------------
+  // 3. get_run happy path (row + artifacts)
+  // -------------------------------------------------------------------------
+
+  it('get_run: happy path — run and artifacts land in result JSON', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+      if (url === '/api/runs/run-done') return { ok: true, json: async () => RUN_ROW_PAYLOAD };
+      if (url === '/api/runs/run-done/artifacts') return { ok: true, json: async () => ARTIFACTS_PAYLOAD };
+      return { ok: false, status: 404 };
+    });
+    const state = makeCallbacks();
+    scriptOneCall('get_run', { run_id: 'run-done' });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'how did run-done go?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(parsed.run).toEqual({
+      run_id: 'run-done',
+      name: 'nightly-sweep',
+      status: 'succeeded',
+      active: false,
+      created_at: '2026-08-12T09:00:00Z',
+      started_at: '2026-08-12T09:00:05Z',
+      finished_at: '2026-08-12T09:10:05Z',
+      duration_s: 600,
+      final_metrics: { val_loss: 0.31 },
+    });
+    expect(parsed.artifacts).toEqual([
+      { kind: 'checkpoint', path: '/runs/run-done/ckpt/final.pt', created_at: '2026-08-12T09:10:00Z' },
+      { kind: 'log', path: '/runs/run-done/train.log' },
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 4. get_run unknown id
+  // -------------------------------------------------------------------------
+
+  it('get_run: unknown id → error mentions the run was not found', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+      return { ok: false, status: 404 };
+    });
+    const state = makeCallbacks();
+    scriptOneCall('get_run', { run_id: 'missing-run' });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'how did missing-run go?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(String(parsed.error)).toContain("run 'missing-run' not found");
   });
 });
