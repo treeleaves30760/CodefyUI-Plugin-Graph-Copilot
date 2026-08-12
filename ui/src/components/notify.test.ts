@@ -3,14 +3,14 @@ import { maybeRequestNotificationPermission, notifyRunFinished } from './notify'
 import { DEFAULT_SETTINGS } from '../state/settings';
 
 function installNotification(permission: NotificationPermission) {
-  const constructed: Array<{ title: string; body?: string }> = [];
+  const constructed: Array<{ title: string; options?: { body?: string } }> = [];
   class FakeNotification {
     static permission = permission;
     static requestPermission = vi.fn(async () => permission);
     onclick: (() => void) | null = null;
     close = vi.fn();
     constructor(title: string, opts?: { body?: string }) {
-      constructed.push({ title, body: opts?.body });
+      constructed.push({ title, options: opts });
     }
   }
   vi.stubGlobal('Notification', FakeNotification);
@@ -26,7 +26,13 @@ describe('notifyRunFinished', () => {
     const { constructed } = installNotification('granted');
     setHidden(true);
     notifyRunFinished(DEFAULT_SETTINGS, { runId: 'abcdef123456', status: 'complete', detail: 'val_loss 2.95' });
-    expect(constructed).toEqual([{ title: 'Graph run complete', body: 'val_loss 2.95 · run abcdef12' }]);
+    expect(constructed).toEqual([{ title: 'Graph run complete', options: { body: 'val_loss 2.95 · run abcdef12' } }]);
+  });
+  it('passes undefined options when body is empty (conditional variant)', () => {
+    const { constructed } = installNotification('granted');
+    setHidden(true);
+    notifyRunFinished(DEFAULT_SETTINGS, { status: 'complete' });
+    expect(constructed).toEqual([{ title: 'Graph run complete', options: undefined }]);
   });
   it('stays silent when the tab is visible', () => {
     const { constructed } = installNotification('granted');
