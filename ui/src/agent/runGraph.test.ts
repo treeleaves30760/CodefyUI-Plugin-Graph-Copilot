@@ -188,6 +188,29 @@ describe('runLiveGraph', () => {
     expect((execute.nodes as unknown[]).length).toBe(3);
   });
 
+  it('fires onRunId once with the first run_id', async () => {
+    socketBehavior = (socket) => {
+      queueMicrotask(() => {
+        socket.emit({
+          type: 'node_status', node_id: 'loop', status: 'progress', run_id: 'r1',
+        });
+        socket.emit({
+          type: 'node_status', node_id: 'loop', status: 'completed', run_id: 'r1',
+        });
+        socket.emit({ type: 'execution_complete', run_id: 'r1' });
+      });
+    };
+
+    const seen: string[] = [];
+    const outcome = await runLiveGraph(fakeApi(), {
+      timeoutMs: 60_000,
+      onRunId: (id) => seen.push(id),
+    });
+
+    expect(outcome.status).toBe('complete');
+    expect(seen).toEqual(['r1']);
+  });
+
   it('an explicit device overrides the host default', async () => {
     socketBehavior = (socket) => {
       queueMicrotask(() => socket.emit({ type: 'execution_complete' }));

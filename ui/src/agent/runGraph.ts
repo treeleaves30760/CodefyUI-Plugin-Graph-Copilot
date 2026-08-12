@@ -98,6 +98,9 @@ export interface RunLiveGraphOptions {
    * applies. */
   device?: string;
   onProgress?: (update: RunProgressUpdate) => void;
+  /** Called once, the first time the host names the run id — early enough to
+   * persist a reattach pointer before any long training epoch begins. */
+  onRunId?: (runId: string) => void;
 }
 
 /** The host's preferred compute device, or undefined when the endpoint is
@@ -331,6 +334,7 @@ export async function runLiveGraph(
       }
       const type = String(message.type ?? '');
       if (typeof message.run_id === 'string' && message.run_id) {
+        if (runId === undefined) opts.onRunId?.(message.run_id);
         runId = message.run_id;
       }
 
