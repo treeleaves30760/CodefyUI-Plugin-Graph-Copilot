@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { finiteNumber, normalizeNodeStatus } from './wireOutputs';
+import { finiteNumber, normalizeNodeStatus, lossFromProgress } from './wireOutputs';
 
 describe('finiteNumber', () => {
   it('accepts finite numbers and booleans, refuses the rest', () => {
@@ -127,5 +127,19 @@ describe('normalizeNodeStatus — current typed outputs shape', () => {
       output_summary: 'bad',
       progress: ['bad'],
     })).not.toThrow();
+  });
+});
+
+describe('lossFromProgress', () => {
+  it('picks loss, then train_loss, then val_loss — first finite wins', () => {
+    expect(lossFromProgress({ loss: 2.5, val_loss: 9 })).toBe(2.5);
+    expect(lossFromProgress({ train_loss: 1.25 })).toBe(1.25);
+    expect(lossFromProgress({ val_loss: 0.5 })).toBe(0.5);
+  });
+  it('ignores non-finite and missing values', () => {
+    expect(lossFromProgress({ loss: NaN, val_loss: 3 })).toBe(3);
+    expect(lossFromProgress({ epoch: 4 })).toBeUndefined();
+    expect(lossFromProgress(null)).toBeUndefined();
+    expect(lossFromProgress(undefined)).toBeUndefined();
   });
 });

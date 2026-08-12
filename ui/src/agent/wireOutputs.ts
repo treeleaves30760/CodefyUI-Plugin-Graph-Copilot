@@ -70,6 +70,21 @@ export function finiteNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+/** Progress fields treated as a loss curve, first match wins. */
+export const LOSS_FIELDS = ['loss', 'train_loss', 'val_loss'] as const;
+
+/** The progress payload's loss value, when it carries one. */
+export function lossFromProgress(
+  progress: Record<string, unknown> | null | undefined,
+): number | undefined {
+  if (!progress) return undefined;
+  for (const field of LOSS_FIELDS) {
+    const value = progress[field];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
