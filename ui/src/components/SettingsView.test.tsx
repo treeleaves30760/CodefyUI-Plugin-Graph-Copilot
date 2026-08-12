@@ -379,6 +379,50 @@ describe('SettingsView', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Notification toggle
+  // -------------------------------------------------------------------------
+
+  it('renders the notification toggle checkbox checked by default', () => {
+    renderSettings();
+    const checkbox = screen.getByRole('checkbox', { name: /notify when a graph run finishes/i });
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('clicking the notification toggle calls onChange with notifyOnRunCompletion: false', async () => {
+    const onChange = vi.fn();
+    renderSettings({ onChange });
+
+    const checkbox = screen.getByRole('checkbox', { name: /notify when a graph run finishes/i });
+    await userEvent.click(checkbox);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0].notifyOnRunCompletion).toBe(false);
+  });
+
+  it('re-rendering with notifyOnRunCompletion: false renders unchecked', () => {
+    const { rerender } = renderSettings({
+      settings: makeSettings({ notifyOnRunCompletion: false }),
+    });
+
+    let checkbox = screen.getByRole('checkbox', { name: /notify when a graph run finishes/i });
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+
+    rerender(
+      <SettingsView
+        api={makeFakeApi()}
+        settings={makeSettings({ notifyOnRunCompletion: true })}
+        codexLoggedIn={false}
+        codexEmail={null}
+        onCodexStatusChange={vi.fn()}
+        onChange={vi.fn()}
+      />,
+    );
+
+    checkbox = screen.getByRole('checkbox', { name: /notify when a graph run finishes/i });
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
   // Footnote
   // -------------------------------------------------------------------------
 
