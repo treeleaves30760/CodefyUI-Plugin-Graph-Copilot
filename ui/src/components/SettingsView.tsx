@@ -605,6 +605,19 @@ export function SettingsView({
         </div>
       )}
 
+      {/* Notification toggle */}
+      <div className="gcp-field">
+        <label>
+          <input
+            type="checkbox"
+            checked={settings.notifyOnRunCompletion !== false}
+            onChange={(e) => onChange({ ...settings, notifyOnRunCompletion: e.target.checked })}
+            aria-label="Notify when a graph run finishes while this tab is in the background"
+          />
+          Notify when a graph run finishes while this tab is in the background
+        </label>
+      </div>
+
       {/* API key fields — shown for non-codex providers */}
       {provider !== 'openai-codex' &&
         KEY_PROVIDERS.filter((p) => p === provider || (provider === 'custom' && p === 'custom')).map(

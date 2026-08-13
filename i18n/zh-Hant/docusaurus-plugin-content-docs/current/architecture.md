@@ -45,7 +45,7 @@ CodefyUI 編輯器頁面
 
 1. 從精簡節點目錄與依 schema 去敏的目前圖快照建立 system prompt。
 2. 透過 CodefyUI `/api/llm/chat` 代理串流模型回覆。
-3. 模型可以讀取最新圖、在畫布套用已驗證的 GraphOps、研究大型節點目錄、在使用者確認後執行 live canvas graph，或啟動隔離實驗。
+3. 模型可以讀取最新圖、在畫布套用已驗證的 GraphOps、研究大型節點目錄、在使用者確認後執行 live canvas graph、列出並查詢 host 的執行歷史，或啟動隔離實驗。
 4. Graph tool result 會先依 schema／fail-closed 規則去敏，再回傳給模型；provider 產生之 tool call 的原始 argument 只留在當次 active provider/tool execution path。
 5. Graph-editing answer 嘗試結束時，runnability gate 最多允許兩個由 validation error 驅動的 corrective rounds。Live graph 若仍無效，該回合會回報 blocked／invalid，而不接受成功。
 6. 完成的對話、精簡實驗摘要與經過 integrity check 的 portable bundle 會寫入外掛的 browser storage。
@@ -76,7 +76,7 @@ Graph 隔離只保證候選 GraphOps 不會改動畫布，並不是通用 sandbo
 3. 圖經 `/ws/execution` 執行；node status 與 live training progress（loss、epoch）串流到面板的狀態列，並依串流的 progress frame 即時繪出 loss sparkline；
 4. tool 回傳精簡結果：final status、per-node scalar/string output summary、最後 progress 值、`metric` 序列尾值、log text tail 與 per-node error。
 
-長時間訓練是預期情境：一次一個 run、預設 6 小時 wall-clock 上限（最高可調至 12 小時），可用面板 Stop 取消。兩代 host 的 run ownership 不同 — 現行 CodefyUI `main` 的 run 由 server 持有（關閉 socket **不會**停止，必須送 `cancel` action），1.3.0 則由 socket 持有（關閉即取消）。因此取消時會先送 `{action: "cancel"}` 再關 socket，兩代都能停止。頁面重載後 re-attach 尚未實作；在現行 host 上 run 本身仍會繼續，事件可經 host 的 run API 查詢。
+長時間訓練是預期情境：一次一個 run、預設 6 小時 wall-clock 上限（最高可調至 12 小時），可用面板 Stop 取消。兩代 host 的 run ownership 不同 — 現行 CodefyUI `main` 的 run 由 server 持有（關閉 socket **不會**停止，必須送 `cancel` action），1.3.0 則由 socket 持有（關閉即取消）。因此取消時會先送 `{action: "cancel"}` 再關 socket，兩代都能停止。在現行 host 上，頁面重載後 run 仍會繼續：只要 host 為某次 run 命名 id，外掛就會立刻把 `active_run` 指標寫入命名空間化 storage；頁面載入時，重新掛回卡片會透過 `GET /api/runs/{id}/events` long polling 追上該 run，從該筆 run 紀錄的最後一個 cursor 接續（events 會經過與 socket 串流相同的 `wireOutputs` 正規化器解析）。卡片上有即時狀態列、loss sparkline、僅供使用者手動操作的 Stop（`POST /api/runs/{id}/cancel`）與 Dismiss；若 run 在頁面關閉期間已經結束，卡片會改顯示其最終 `final_metrics`，並附上一鍵提示，讓 agent 透過 `get_run` 幫忙摘要結果。只要指標所指的 run 仍在進行中，`run_graph` 就會拒絕新的提交。agent 的 `list_runs` 與 `get_run` 工具讀取同一個 REST surface — 包含從編輯器自身 Run 按鈕啟動的 run。以上機制皆會偵測 `/api/runs` 是否存在；1.3.0 host（run 由 socket 持有）會回報此功能無法使用；追蹤中的 run 在背景分頁完成時，也可以選擇性地觸發瀏覽器通知（Settings → Notifications，預設開啟）。
 
 ## CodefyUI 契約邊界
 
@@ -107,10 +107,13 @@ Graph 隔離只保證候選 GraphOps 不會改動畫布，並不是通用 sandbo
 | 路徑 | 職責 |
 | --- | --- |
 | `ui/src/components/` | 工作台、聊天、設定、歷史、實驗呈現、訊息與工具階段 |
+| `ui/src/components/RunReattachBanner.tsx` | 重新掛回卡片：帶 Stop 的即時追蹤、離開期間已完成的結果、通知交接 |
 | `ui/src/agent/loop.ts` | tool schema、多輪 agent loop、dispatch 與 turn callback |
 | `ui/src/agent/prompt.ts` | 圖／實驗政策與研究證據規則 |
 | `ui/src/agent/experiments.ts` | clone、mutate、validate、execute、measure、rank、選擇性 promotion 與摘要 |
 | `ui/src/agent/runGraph.ts` | live canvas graph 經 `/ws/execution` 執行：progress 串流、cancel／timeout 處理與精簡 run 結果 |
+| `ui/src/agent/runHistory.ts` | `/api/runs` 的 REST adapter：probe、list／get／artifacts、cancel，以及 cursor-replay 加上 long-poll 的 run follower |
+| `ui/src/agent/runPointer.ts` | 可撐過頁面重載、驅動重新掛回的持久化 active-run 指標 |
 | `ui/src/agent/wireOutputs.ts` | 跨 host 世代正規化 `node_status` payload（1.3.0 `output_summary`/`progress` 與現行 typed `outputs`） |
 | `ui/src/agent/optimizer.ts` | strict complete-grid 與 versioned seeded-random parameter plan compiler |
 | `ui/src/agent/experimentAnalysis.ts` | descriptive interval／effect size、formula-safe CSV 與 evidence-labeled Markdown |

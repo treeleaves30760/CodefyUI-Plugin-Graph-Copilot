@@ -241,3 +241,28 @@ describe('withReasoningEffort', () => {
     expect(activeReasoningEffort(next)).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// notifyOnRunCompletion
+// ---------------------------------------------------------------------------
+
+describe('notifyOnRunCompletion', () => {
+  it('defaults to true', () => {
+    const api = makeApi();
+    expect(loadSettings(api as any).notifyOnRunCompletion).toBe(true);
+  });
+
+  it('round-trips an explicit false through save/load', () => {
+    const api = makeApi();
+    saveSettings(api as any, { ...loadSettings(api as any), notifyOnRunCompletion: false });
+    expect(loadSettings(api as any).notifyOnRunCompletion).toBe(false);
+  });
+
+  it('keeps the stored value when a patch omits it', () => {
+    const api = makeApi();
+    saveSettings(api as any, { ...loadSettings(api as any), notifyOnRunCompletion: false });
+    // Simulate an older persisted object being merged: store JSON without the key.
+    api.storage.set('settings', JSON.stringify({ provider: 'openai' }));
+    expect(loadSettings(api as any).notifyOnRunCompletion).toBe(true); // default fills missing key
+  });
+});

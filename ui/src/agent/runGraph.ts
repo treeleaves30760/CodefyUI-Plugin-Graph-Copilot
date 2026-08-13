@@ -98,6 +98,9 @@ export interface RunLiveGraphOptions {
    * applies. */
   device?: string;
   onProgress?: (update: RunProgressUpdate) => void;
+  /** Called once, the first time the host names the run id — early enough to
+   * persist a reattach pointer before any long training epoch begins. */
+  onRunId?: (runId: string) => void;
 }
 
 /** The host's preferred compute device, or undefined when the endpoint is
@@ -189,7 +192,7 @@ function capEntries<T extends number | string>(
 // ---------------------------------------------------------------------------
 
 /** Terminal node statuses (current hosts also emit "cached"/"interrupted"). */
-const TERMINAL_NODE_STATUSES = new Set([
+export const TERMINAL_NODE_STATUSES = new Set([
   'completed', 'cached', 'error', 'interrupted',
 ]);
 
@@ -331,6 +334,7 @@ export async function runLiveGraph(
       }
       const type = String(message.type ?? '');
       if (typeof message.run_id === 'string' && message.run_id) {
+        if (runId === undefined) opts.onRunId?.(message.run_id);
         runId = message.run_id;
       }
 

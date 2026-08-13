@@ -34,7 +34,16 @@ import {
   fetchDefaultDevice,
   runLiveGraph,
 } from './runGraph';
-import type { RunProgressUpdate } from './runGraph';
+import type { RunGraphOutcome, RunProgressUpdate } from './runGraph';
+import {
+  fetchRun,
+  fetchRunArtifacts,
+  fetchRunList,
+  isTerminalRunStatus,
+  probeRunHistory,
+} from './runHistory';
+import type { RunRow } from './runHistory';
+import { clearActiveRun, readActiveRun, writeActiveRun } from './runPointer';
 
 // ---------------------------------------------------------------------------
 // Constants & tool definitions
@@ -216,6 +225,28 @@ Each entry in "operations" is one GraphOp object; use these EXACT field names:
       required: ['strategy', 'hypothesis', 'objective', 'bindings'],
     },
   },
+  {
+    name: 'list_runs',
+    description:
+      'List recent graph runs on the CodefyUI host, newest first — INCLUDING runs the user started from the editor\'s own Run button. Each row: run_id, name, status (queued|running|succeeded|failed|cancelled|interrupted), queue_position (when queued), created_at, duration_s, error, and final_metrics (the last value of every metric series the run recorded, e.g. val_loss). Use this when asked what ran recently, whether something is still running, or which run to inspect; then use get_run for one run\'s detail. Requires a host with server-owned runs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Rows to return (default 10).' },
+        active_only: { type: 'boolean', description: 'Only queued/running runs.' },
+      },
+    },
+  },
+  {
+    name: 'get_run',
+    description:
+      'Fetch one run\'s server-side record by run_id: status, timing, error, final_metrics, and recorded artifacts (checkpoints etc.). This is the ground truth for "how did that run go" — report its numbers exactly; never reconstruct them from memory. Works for editor-started runs too.',
+    input_schema: {
+      type: 'object',
+      properties: { run_id: { type: 'string' } },
+      required: ['run_id'],
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -262,6 +293,10 @@ export interface TurnCallbacks {
   onRunApproval?(request: RunApprovalRequest): Promise<boolean>;
   /** Live progress stream while a run_graph execution is in flight. */
   onRunProgress?(update: RunProgressUpdate): void;
+  /** The live run is over from the plugin's perspective (complete, cancelled,
+   * timed out, or failed-and-confirmed-dead). Not fired when a socket error
+   * leaves a server-owned run alive. */
+  onRunFinished?(outcome: RunGraphOutcome): void;
   /** Called once at the end (success, error, or cap) with ALL turns accumulated. */
   onTurnsCommitted(turns: ChatTurn[]): void;
   onError(message: string): void;
@@ -727,6 +762,27 @@ async function executeTool(
         error: 'A live graph run is already in progress. Wait for it to finish or cancel it before starting another.',
       });
     }
+
+    // A reload can orphan a live server-owned run this panel started. The
+    // turn-scoped liveRunInFlight flag cannot see it — the pointer can.
+    const previousPointer = readActiveRun(api);
+    if (previousPointer) {
+      if (await probeRunHistory(api, signal)) {
+        let previousRow: RunRow | null = null;
+        try { previousRow = await fetchRun(api, previousPointer.runId, signal); } catch { previousRow = null; }
+        if (previousRow && !isTerminalRunStatus(previousRow.status)) {
+          return JSON.stringify({
+            error: `Run ${previousPointer.runId} is still ${previousRow.status} on the host`
+              + `${previousPointer.reason ? ` (${previousPointer.reason})` : ''}. `
+              + 'One run at a time: wait for it, or the user can stop it from the reattach card '
+              + '(reopen or reload the panel to see it).',
+          });
+        }
+      }
+      // Terminal, unknown, or a 1.3.0 host (whose run died with its socket).
+      clearActiveRun(api, previousPointer.runId);
+    }
+
     const reason = typeof args.reason === 'string' && args.reason.trim()
       ? args.reason.trim().slice(0, 300)
       : 'Run the current graph.';
@@ -820,7 +876,29 @@ async function executeTool(
         timeoutMs: timeoutMinutes * 60_000,
         ...(device ? { device } : {}),
         onProgress: callbacks.onRunProgress,
+        onRunId: (id) => writeActiveRun(api, {
+          runId: id,
+          reason,
+          submittedAt: Date.now(),
+          timeoutMinutes,
+          ...(device ? { device } : {}),
+        }),
       });
+
+      // Pointer cleanup + finish signal. On a socket-level 'error' the server-
+      // owned run may still be alive — keep the pointer so the reattach card can
+      // pick it up, and do not announce a finish that has not happened.
+      let runMayStillBeRunning = false;
+      if (outcome.runId) {
+        if (outcome.status === 'error' && await probeRunHistory(api, signal)) {
+          let liveRow: RunRow | null = null;
+          try { liveRow = await fetchRun(api, outcome.runId, signal); } catch { liveRow = null; }
+          runMayStillBeRunning = liveRow !== null && !isTerminalRunStatus(liveRow.status);
+        }
+        if (!runMayStillBeRunning) clearActiveRun(api, outcome.runId);
+      }
+      if (!runMayStillBeRunning) callbacks.onRunFinished?.(outcome);
+
       const { durationMs, textTail, media, ...rest } = outcome;
       // Media go to the model as REFERENCES only: inline image bytes would
       // burn context for something the panel already renders.
@@ -834,11 +912,80 @@ async function executeTool(
         duration_s: Math.round(durationMs / 1000),
         ...(textTail ? { text_tail: textTail } : {}),
         ...(mediaRefs.length ? { media: mediaRefs } : {}),
+        ...(runMayStillBeRunning ? { run_may_still_be_running: true } : {}),
       });
     } catch (error) {
       return JSON.stringify({ error: `Run failed: ${String(error)}` });
     } finally {
       liveRunInFlight = false;
+    }
+  }
+
+  if (name === 'list_runs' || name === 'get_run') {
+    if (!(await probeRunHistory(api, signal))) {
+      return JSON.stringify({
+        error: 'Run history is unavailable: this CodefyUI host does not expose /api/runs (server-owned runs). Only results returned in this conversation are known.',
+      });
+    }
+  }
+
+  if (name === 'list_runs') {
+    const rawLimit = typeof args.limit === 'number' && Number.isFinite(args.limit)
+      ? Math.round(args.limit) : 10;
+    try {
+      const { runs, total } = await fetchRunList(api, {
+        limit: Math.min(Math.max(rawLimit, 1), 20), signal,
+      });
+      const filtered = args.active_only === true
+        ? runs.filter((run) => !isTerminalRunStatus(run.status))
+        : runs;
+      return JSON.stringify({
+        total,
+        runs: filtered.map((run) => ({
+          run_id: run.runId,
+          ...(run.name ? { name: run.name } : {}),
+          status: run.status,
+          active: run.active,
+          ...(run.queuePosition !== null ? { queue_position: run.queuePosition } : {}),
+          ...(run.createdAt ? { created_at: run.createdAt } : {}),
+          ...(run.durationS !== null ? { duration_s: run.durationS } : {}),
+          ...(run.error ? { error: run.error } : {}),
+          ...(Object.keys(run.finalMetrics).length ? { final_metrics: run.finalMetrics } : {}),
+        })),
+      });
+    } catch (error) {
+      return JSON.stringify({ error: `Could not list runs: ${String(error)}` });
+    }
+  }
+
+  if (name === 'get_run') {
+    const runId = typeof args.run_id === 'string' ? args.run_id.trim() : '';
+    if (!runId) return JSON.stringify({ error: 'get_run requires a non-empty "run_id".' });
+    try {
+      const run = await fetchRun(api, runId, signal);
+      if (!run) return JSON.stringify({ error: `run '${runId}' not found on this host.` });
+      const artifacts = await fetchRunArtifacts(api, runId, signal);
+      return JSON.stringify({
+        run: {
+          run_id: run.runId,
+          ...(run.name ? { name: run.name } : {}),
+          status: run.status,
+          active: run.active,
+          ...(run.createdAt ? { created_at: run.createdAt } : {}),
+          ...(run.startedAt ? { started_at: run.startedAt } : {}),
+          ...(run.finishedAt ? { finished_at: run.finishedAt } : {}),
+          ...(run.durationS !== null ? { duration_s: run.durationS } : {}),
+          ...(run.error ? { error: run.error } : {}),
+          final_metrics: run.finalMetrics,
+        },
+        artifacts: artifacts.map((artifact) => ({
+          kind: artifact.kind,
+          path: artifact.path,
+          ...(artifact.createdAt ? { created_at: artifact.createdAt } : {}),
+        })),
+      });
+    } catch (error) {
+      return JSON.stringify({ error: `Could not fetch run '${runId}': ${String(error)}` });
     }
   }
 

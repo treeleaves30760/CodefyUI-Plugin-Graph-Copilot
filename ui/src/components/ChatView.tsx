@@ -14,6 +14,8 @@ import { formatRunStatusLine } from '../agent/runGraph';
 import { RunSparkline, appendLossPoint } from './RunSparkline';
 import { MessageBubble } from './MessageBubble';
 import { describeStage, groupTurns } from './turnStages';
+import { RunReattachBanner } from './RunReattachBanner';
+import { maybeRequestNotificationPermission, notifyRunFinished } from './notify';
 
 // ---------------------------------------------------------------------------
 // Icons
@@ -409,6 +411,14 @@ export function ChatView({
               setRunLossSeries((prev) => appendLossPoint(prev, update));
             }
           },
+          onRunFinished(outcome) {
+            const detail = [
+              ...Object.entries(outcome.metrics).slice(0, 2)
+                .map(([name, value]) => `${name} ${Number.isInteger(value) ? value : value.toFixed(4)}`),
+              `${Math.max(1, Math.round(outcome.durationMs / 60_000))} min`,
+            ].join(' · ');
+            notifyRunFinished(settings, { runId: outcome.runId, status: outcome.status, detail });
+          },
           onTurnsCommitted(turns) {
             setStreamingText('');
             streamBuf = '';
@@ -462,6 +472,7 @@ export function ChatView({
     resolve?.(approved);
   };
   const handleRunDecision = (approved: boolean) => {
+    if (approved) maybeRequestNotificationPermission(settings);
     const resolve = approvalResolveRef.current;
     approvalResolveRef.current = null;
     setRunApproval(null);
@@ -532,6 +543,15 @@ export function ChatView({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
+      <RunReattachBanner
+        api={api}
+        settings={settings}
+        onAskAgent={(text) => {
+          setInput(text);
+          textareaRef.current?.focus();
+        }}
+      />
+
       {/* Message list */}
       <div
         className="gcp-messages"

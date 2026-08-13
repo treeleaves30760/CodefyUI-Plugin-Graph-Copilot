@@ -45,7 +45,7 @@ vi.mock('./runGraph', async (importOriginal) => {
 import { streamChat } from '../llm/client';
 import { runGraphExperiments } from './experiments';
 import { runLiveGraph } from './runGraph';
-import type { RunGraphOutcome } from './runGraph';
+import type { RunGraphOutcome, RunLiveGraphOptions } from './runGraph';
 import {
   MAX_TOOL_ROUNDS,
   MAX_VALIDATION_NUDGES,
@@ -54,6 +54,8 @@ import {
   validateCurrentGraph,
 } from './loop';
 import type { ExperimentApprovalRequest, TurnCallbacks } from './loop';
+import { resetRunHistoryProbeForTests } from './runHistory';
+import { readActiveRun, writeActiveRun } from './runPointer';
 
 // ---------------------------------------------------------------------------
 // Scripted streamChat helper
@@ -197,6 +199,10 @@ const FAKE_APPLY_RESULT: ApplyResult = {
 };
 
 function makeFakeApi(): CodefyUIPluginAPI {
+  // A real Map backs storage (rather than bare vi.fn() stubs) so pointer-
+  // lifecycle tests can read back what run_graph wrote/cleared, while still
+  // being spies other tests could assert call-shape on if ever needed.
+  const storageStore = new Map<string, string>();
   return {
     apiVersion: 1,
     pluginId: 'graph-copilot',
@@ -208,7 +214,11 @@ function makeFakeApi(): CodefyUIPluginAPI {
       onGraphChanged: vi.fn().mockReturnValue(() => {}),
     },
     http: { fetch: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ valid: true, errors: [] }) }) },
-    storage: { get: vi.fn(), set: vi.fn(), remove: vi.fn() },
+    storage: {
+      get: vi.fn((key: string) => storageStore.get(key) ?? null),
+      set: vi.fn((key: string, value: string) => { storageStore.set(key, value); }),
+      remove: vi.fn((key: string) => { storageStore.delete(key); }),
+    },
   } as unknown as CodefyUIPluginAPI;
 }
 
@@ -2074,5 +2084,336 @@ describe('run_graph tool', () => {
       },
     ]);
     expect(JSON.stringify(parsed)).not.toContain('AAAA');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pointer lifecycle (#22): the stale-pointer guard runs before a new run is
+  // allowed to start, and this run's own pointer is written mid-run (via the
+  // onRunId hook) and cleared once the run is over from the plugin's view.
+  // ---------------------------------------------------------------------------
+
+  describe('pointer lifecycle', () => {
+    // The probe caches a positive result module-wide (see runHistory.ts);
+    // reset it so an earlier test's successful probe cannot leak in here.
+    beforeEach(() => {
+      resetRunHistoryProbeForTests();
+    });
+
+    it('refuses a new run while the pointer run is still active on the host', async () => {
+      scriptOneRun();
+      const api = makeFakeApi();
+      writeActiveRun(api, {
+        runId: 'run-old', reason: 'earlier training', submittedAt: 1000, timeoutMinutes: 30,
+      });
+      (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+        if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+        if (url === '/api/runs/run-old') return { ok: true, json: async () => ({ id: 'run-old', status: 'running' }) };
+        return { ok: true, json: async () => ({ valid: true, errors: [] }) };
+      });
+      const state = makeCallbacks();
+      const approvalSpy = vi.fn(async () => true);
+      state.cbs.onRunApproval = approvalSpy;
+
+      await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+      expect(approvalSpy).not.toHaveBeenCalled();
+      expect(runLiveGraph).not.toHaveBeenCalled();
+      const parsed = toolResult(state);
+      expect(String(parsed.error)).toContain('still');
+      expect(String(parsed.error)).toContain('run-old');
+    });
+
+    it('clears a stale pointer once the host reports the earlier run is over, then proceeds normally', async () => {
+      scriptOneRun();
+      const api = makeFakeApi();
+      writeActiveRun(api, {
+        runId: 'run-old', reason: 'earlier training', submittedAt: 1000, timeoutMinutes: 30,
+      });
+      (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+        if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+        if (url === '/api/runs/run-old') return { ok: true, json: async () => ({ id: 'run-old', status: 'succeeded' }) };
+        return { ok: true, json: async () => ({ valid: true, errors: [] }) };
+      });
+      const state = makeCallbacks();
+      state.cbs.onRunApproval = async () => {
+        // The stale pointer must already be gone by the time the user sees
+        // the approval card -- proves the guard cleared it up front, rather
+        // than this happening to be masked by this run's own cleanup later.
+        expect(readActiveRun(api)).toBeNull();
+        return true;
+      };
+
+      await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+      expect(runLiveGraph).toHaveBeenCalledTimes(1);
+      const parsed = toolResult(state);
+      expect(parsed.status).toBe('complete');
+    });
+
+    it('writes the pointer via onRunId, then clears it and fires onRunFinished after a successful run', async () => {
+      scriptOneRun();
+      const api = makeFakeApi();
+      let pointerDuringRun: ReturnType<typeof readActiveRun> = null;
+      (runLiveGraph as Mock).mockImplementation(async (_api: unknown, opts: RunLiveGraphOptions) => {
+        opts.onRunId?.('run-1');
+        pointerDuringRun = readActiveRun(api);
+        return { ...RUN_OUTCOME };
+      });
+      const state = makeCallbacks();
+      state.cbs.onRunApproval = async () => true;
+      const finished: RunGraphOutcome[] = [];
+      state.cbs.onRunFinished = (outcome) => finished.push(outcome);
+
+      await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+      expect(pointerDuringRun).toEqual({
+        runId: 'run-1', reason: 'Train the model', submittedAt: expect.any(Number), timeoutMinutes: 360,
+      });
+      expect(readActiveRun(api)).toBeNull();
+      expect(finished).toEqual([{ ...RUN_OUTCOME }]);
+    });
+
+    it('keeps the pointer and suppresses onRunFinished when a socket error leaves the run alive on the host', async () => {
+      scriptOneRun();
+      const api = makeFakeApi();
+      (runLiveGraph as Mock).mockImplementation(async (_api: unknown, opts: RunLiveGraphOptions) => {
+        opts.onRunId?.('run-1');
+        return {
+          ...RUN_OUTCOME,
+          status: 'error',
+          error: 'Execution WebSocket closed before the run completed.',
+        };
+      });
+      (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+        if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+        if (url === '/api/runs/run-1') return { ok: true, json: async () => ({ id: 'run-1', status: 'running' }) };
+        return { ok: true, json: async () => ({ valid: true, errors: [] }) };
+      });
+      const state = makeCallbacks();
+      state.cbs.onRunApproval = async () => true;
+      const finished: RunGraphOutcome[] = [];
+      state.cbs.onRunFinished = (outcome) => finished.push(outcome);
+
+      await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'x', callbacks: state.cbs });
+
+      expect(finished).toHaveLength(0);
+      expect(readActiveRun(api)?.runId).toBe('run-1');
+      const parsed = toolResult(state);
+      expect(parsed.status).toBe('error');
+      expect(parsed.run_may_still_be_running).toBe(true);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list_runs / get_run tools
+// ---------------------------------------------------------------------------
+
+describe('list_runs / get_run tools', () => {
+  // The probe caches a positive result module-wide (see runHistory.ts); reset
+  // it so "capability absent" tests are not poisoned by an earlier test's
+  // successful probe, and vice versa.
+  beforeEach(() => {
+    resetRunHistoryProbeForTests();
+  });
+
+  function scriptOneCall(name: string, args: Record<string, unknown> = {}): void {
+    scriptStreamChat([
+      { done: makeDoneToolUse('t-run-history', name, args) },
+      { done: makeDoneEnd('done') },
+    ]);
+  }
+
+  function toolResult(state: CallbackState): Record<string, unknown> {
+    const toolTurn = (state.committed ?? []).find((turn) => turn.role === 'tool');
+    expect(toolTurn).toBeDefined();
+    return JSON.parse(toolTurn!.content) as Record<string, unknown>;
+  }
+
+  const RUNS_LIST_PAYLOAD = {
+    total: 2,
+    runs: [
+      {
+        id: 'run-active', name: 'nightly-sweep', status: 'running', active: true,
+        queue_position: null, created_at: '2026-08-12T10:00:00Z',
+        started_at: '2026-08-12T10:00:05Z', finished_at: null,
+        error: null, final_metrics: { val_loss: 0.51 },
+      },
+      {
+        id: 'run-done', status: 'succeeded', active: false,
+        queue_position: null, created_at: '2026-08-12T09:00:00Z',
+        started_at: '2026-08-12T09:00:05Z', finished_at: '2026-08-12T09:10:05Z',
+        error: null, final_metrics: { val_loss: 0.31 },
+      },
+    ],
+  };
+
+  const RUN_ROW_PAYLOAD = {
+    id: 'run-done', name: 'nightly-sweep', status: 'succeeded', active: false,
+    queue_position: null, created_at: '2026-08-12T09:00:00Z',
+    started_at: '2026-08-12T09:00:05Z', finished_at: '2026-08-12T09:10:05Z',
+    error: null, final_metrics: { val_loss: 0.31 },
+  };
+
+  const ARTIFACTS_PAYLOAD = {
+    artifacts: [
+      { kind: 'checkpoint', path: '/runs/run-done/ckpt/final.pt', created_at: '2026-08-12T09:10:00Z' },
+      { kind: 'log', path: '/runs/run-done/train.log' },
+    ],
+  };
+
+  // -------------------------------------------------------------------------
+  // 1. Capability absent
+  // -------------------------------------------------------------------------
+
+  it('list_runs: reports run history unavailable when the host has no /api/runs', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({ ok: false, status: 404 });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs');
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'what ran recently?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(String(parsed.error)).toContain('Run history is unavailable');
+  });
+
+  it('get_run: reports run history unavailable when the host has no /api/runs', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({ ok: false, status: 404 });
+    const state = makeCallbacks();
+    scriptOneCall('get_run', { run_id: 'run-done' });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'how did run-done go?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(String(parsed.error)).toContain('Run history is unavailable');
+  });
+
+  // -------------------------------------------------------------------------
+  // 2. list_runs happy path (rows, active_only, limit clamp)
+  // -------------------------------------------------------------------------
+
+  it('list_runs: happy path — rows carry run_id/status/final_metrics, omitting absent optional fields', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+      if (url === '/api/runs?limit=10') return { ok: true, json: async () => RUNS_LIST_PAYLOAD };
+      return { ok: false, status: 404 };
+    });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs');
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'what ran recently?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(parsed.total).toBe(2);
+    expect(parsed.runs).toEqual([
+      {
+        run_id: 'run-active', name: 'nightly-sweep', status: 'running', active: true,
+        created_at: '2026-08-12T10:00:00Z', final_metrics: { val_loss: 0.51 },
+      },
+      {
+        run_id: 'run-done', status: 'succeeded', active: false,
+        created_at: '2026-08-12T09:00:00Z', duration_s: 600,
+        final_metrics: { val_loss: 0.31 },
+      },
+    ]);
+  });
+
+  it('list_runs: active_only filters to just the active run (total stays the server total)', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+      if (url === '/api/runs?limit=10') return { ok: true, json: async () => RUNS_LIST_PAYLOAD };
+      return { ok: false, status: 404 };
+    });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs', { active_only: true });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'what is still running?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(parsed.total).toBe(2);
+    const runs = parsed.runs as Array<Record<string, unknown>>;
+    expect(runs.map((run) => run.run_id)).toEqual(['run-active']);
+  });
+
+  it('list_runs: clamps an oversized limit down to 20', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({ ok: true, json: async () => ({ runs: [], total: 0 }) });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs', { limit: 999 });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'list', callbacks: state.cbs });
+
+    const urls = (api.http.fetch as Mock).mock.calls.map((call) => call[0]);
+    expect(urls).toContain('/api/runs?limit=20');
+  });
+
+  it('list_runs: clamps a sub-1 limit up to 1', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockResolvedValue({ ok: true, json: async () => ({ runs: [], total: 0 }) });
+    const state = makeCallbacks();
+    scriptOneCall('list_runs', { limit: -5 });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'list', callbacks: state.cbs });
+
+    const urls = (api.http.fetch as Mock).mock.calls.map((call) => call[0]);
+    expect(urls).toContain('/api/runs?limit=1');
+  });
+
+  // -------------------------------------------------------------------------
+  // 3. get_run happy path (row + artifacts)
+  // -------------------------------------------------------------------------
+
+  it('get_run: happy path — run and artifacts land in result JSON', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+      if (url === '/api/runs/run-done') return { ok: true, json: async () => RUN_ROW_PAYLOAD };
+      if (url === '/api/runs/run-done/artifacts') return { ok: true, json: async () => ARTIFACTS_PAYLOAD };
+      return { ok: false, status: 404 };
+    });
+    const state = makeCallbacks();
+    scriptOneCall('get_run', { run_id: 'run-done' });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'how did run-done go?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(parsed.run).toEqual({
+      run_id: 'run-done',
+      name: 'nightly-sweep',
+      status: 'succeeded',
+      active: false,
+      created_at: '2026-08-12T09:00:00Z',
+      started_at: '2026-08-12T09:00:05Z',
+      finished_at: '2026-08-12T09:10:05Z',
+      duration_s: 600,
+      final_metrics: { val_loss: 0.31 },
+    });
+    expect(parsed.artifacts).toEqual([
+      { kind: 'checkpoint', path: '/runs/run-done/ckpt/final.pt', created_at: '2026-08-12T09:10:00Z' },
+      { kind: 'log', path: '/runs/run-done/train.log' },
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 4. get_run unknown id
+  // -------------------------------------------------------------------------
+
+  it('get_run: unknown id → error mentions the run was not found', async () => {
+    const api = makeFakeApi();
+    (api.http.fetch as Mock).mockImplementation(async (url: string) => {
+      if (url === '/api/runs?limit=1') return { ok: true, json: async () => ({ runs: [], total: 0 }) };
+      return { ok: false, status: 404 };
+    });
+    const state = makeCallbacks();
+    scriptOneCall('get_run', { run_id: 'missing-run' });
+
+    await runTurn({ api, settings: FAKE_SETTINGS, history: [], userText: 'how did missing-run go?', callbacks: state.cbs });
+
+    const parsed = toolResult(state);
+    expect(String(parsed.error)).toContain("run 'missing-run' not found");
   });
 });

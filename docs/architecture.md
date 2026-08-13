@@ -49,7 +49,7 @@ Each user message starts a bounded tool-using turn:
 
 1. The plugin builds a system prompt from a compact installed-node catalog and a schema-redacted snapshot of the active graph.
 2. It streams the model response through CodefyUI's `/api/llm/chat` proxy.
-3. The model can inspect the latest graph, apply validated `GraphOp` batches to the canvas, research parts of a large node catalog, execute the live canvas graph after user confirmation, or run an isolated experiment study.
+3. The model can inspect the latest graph, apply validated `GraphOp` batches to the canvas, research parts of a large node catalog, execute the live canvas graph after user confirmation, list and inspect the host's run history, or run an isolated experiment study.
 4. Graph-tool results are schema/fail-closed redacted before they return to the model. The original arguments of a provider-generated tool call stay only in the active provider/tool execution path.
 5. When a graph-editing answer tries to finish, a runnability gate allows up to two validation-driven corrective rounds. If the live graph remains invalid, the turn reports blocked/invalid instead of accepting success.
 6. Completed chat turns, compact experiment summaries, and integrity-checked portable bundles are stored through the plugin's namespaced browser storage.
@@ -87,7 +87,7 @@ When the user asks to run, train, or evaluate their graph, the agent can execute
 3. the graph executes over `/ws/execution`; node statuses and live training progress (loss, epochs) stream into the panel's status bar, with a live loss sparkline drawn from the streamed progress frames;
 4. the tool returns a compact outcome: final status, per-node scalar/string output summaries, last progress values, `metric` series tails, log text tail, and per-node errors.
 
-Long training runs are the expected case: one run at a time, a default 6-hour wall-clock cap (adjustable up to 12 hours), and cancellation from the panel's Stop control. Host generations differ in run ownership — on current CodefyUI `main` runs are server-owned (closing the socket does **not** stop them; an explicit `cancel` action does), while on 1.3.0 the socket owns the run (closing cancels). Cancellation therefore sends `{action: "cancel"}` first and then closes the socket, which stops the run on both generations. Reattaching to a run after a page reload is not implemented yet; on current hosts the run itself survives, and its events remain queryable through the host's run APIs.
+Long training runs are the expected case: one run at a time, a default 6-hour wall-clock cap (adjustable up to 12 hours), and cancellation from the panel's Stop control. Host generations differ in run ownership — on current CodefyUI `main` runs are server-owned (closing the socket does **not** stop them; an explicit `cancel` action does), while on 1.3.0 the socket owns the run (closing cancels). Cancellation therefore sends `{action: "cancel"}` first and then closes the socket, which stops the run on both generations. On current hosts the run survives a page reload: the plugin persists an `active_run` pointer in namespaced storage the moment the host names the run id, and on load a reattach card follows the run over `GET /api/runs/{id}/events` long polling, resuming from the run row's last event cursor (events parse through the same `wireOutputs` normalizer as the socket stream). The card carries the live status line, a loss sparkline, a human-only Stop (`POST /api/runs/{id}/cancel`), and Dismiss; a run that finished while the page was closed shows its final `final_metrics` instead, with a one-click prompt that asks the agent to summarize it from `get_run`. `run_graph` refuses a new submission while the pointer's run is still active. The agent's `list_runs` and `get_run` tools read the same REST surface — including runs started from the editor's own Run button. All of this feature-detects `/api/runs`; a 1.3.0 host (socket-owned runs) reports the capability unavailable, and an optional browser notification (Settings → Notifications, default on) fires when a tracked run completes in a hidden tab.
 
 ## CodefyUI contract boundary
 
@@ -126,10 +126,13 @@ These are existing CodefyUI core services. Graph Copilot does not register new e
 | Path | Responsibility |
 | --- | --- |
 | `ui/src/components/` | Workbench shell, chat, settings, history, experiment presentation, messages, and tool stages |
+| `ui/src/components/RunReattachBanner.tsx` | Reattach card: live follow with Stop, finished-while-away results, notification hand-off |
 | `ui/src/agent/loop.ts` | Tool schemas, multi-round agent loop, tool dispatch, and turn persistence callbacks |
 | `ui/src/agent/prompt.ts` | Graph/experiment policy and evidence-aware research instructions |
 | `ui/src/agent/experiments.ts` | Clone, mutate, validate, execute, measure, rank, optional promotion, and browser-local experiment summaries |
 | `ui/src/agent/runGraph.ts` | Live canvas-graph execution over `/ws/execution`: streaming progress, cancel/timeout handling, compact run outcomes |
+| `ui/src/agent/runHistory.ts` | REST adapter over `/api/runs`: probe, list/get/artifacts, cancel, and the cursor-replay + long-poll run follower |
+| `ui/src/agent/runPointer.ts` | Persisted active-run pointer that survives reloads and powers reattach |
 | `ui/src/agent/wireOutputs.ts` | Normalizes `node_status` payloads across host generations (1.3.0 `output_summary`/`progress` vs current typed `outputs` entries) |
 | `ui/src/agent/optimizer.ts` | Strict complete-grid and versioned seeded-random parameter-plan compiler |
 | `ui/src/agent/experimentAnalysis.ts` | Descriptive intervals/effect sizes plus formula-safe CSV and evidence-labeled Markdown exports |

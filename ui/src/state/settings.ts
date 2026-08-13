@@ -41,6 +41,10 @@ export interface Settings {
     reasoningModel?: string;
   }>>;
   customBaseUrl: string;
+  /** Fire a browser notification when a tracked graph run finishes while the
+   * tab is hidden. Default true; permission is requested lazily on the first
+   * approved run. */
+  notifyOnRunCompletion?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +66,7 @@ export const DEFAULT_SETTINGS: Settings = {
   reasoningEfforts: { 'openai-codex': 'max' },
   providerCapabilities: {},
   customBaseUrl: '',
+  notifyOnRunCompletion: true,
 };
 
 const STORAGE_KEY = 'settings';
@@ -93,6 +98,9 @@ function mergeSettings(base: Settings, patch: Partial<Settings>): Settings {
     // A host upgrade/downgrade must be negotiated again each browser session.
     providerCapabilities: {},
     customBaseUrl: patch.customBaseUrl !== undefined ? patch.customBaseUrl : base.customBaseUrl,
+    notifyOnRunCompletion: patch.notifyOnRunCompletion !== undefined
+      ? patch.notifyOnRunCompletion
+      : base.notifyOnRunCompletion,
   };
 }
 

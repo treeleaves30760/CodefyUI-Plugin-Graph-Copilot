@@ -8,12 +8,10 @@
 
 import React from 'react';
 import type { RunProgressUpdate } from '../agent/runGraph';
+import { lossFromProgress } from '../agent/wireOutputs';
 
 /** Sliding cap keeps the polyline cheap to render on long runs. */
 export const SPARKLINE_MAX_POINTS = 120;
-
-/** Progress fields treated as a loss curve, first match wins. */
-const LOSS_FIELDS = ['loss', 'train_loss', 'val_loss'];
 
 /** Append the update's loss value (if any) to a capped series copy.
  * Returns the same array instance when the update carries no loss, so React
@@ -22,18 +20,12 @@ export function appendLossPoint(
   series: number[],
   update: RunProgressUpdate,
 ): number[] {
-  const progress = update.progress;
-  if (!progress) return series;
-  for (const field of LOSS_FIELDS) {
-    const value = progress[field];
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      const next = [...series, value];
-      return next.length > SPARKLINE_MAX_POINTS
-        ? next.slice(next.length - SPARKLINE_MAX_POINTS)
-        : next;
-    }
-  }
-  return series;
+  const value = lossFromProgress(update.progress);
+  if (value === undefined) return series;
+  const next = [...series, value];
+  return next.length > SPARKLINE_MAX_POINTS
+    ? next.slice(next.length - SPARKLINE_MAX_POINTS)
+    : next;
 }
 
 /** Build an SVG polyline points string for the series, normalized to the
