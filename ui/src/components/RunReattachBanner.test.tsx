@@ -8,7 +8,8 @@
  *    prefills the composer and clears the pointer.
  * 4. Active row -> live card, followed via followRun to a terminal result;
  *    notifyRunFinished fires once with the final status.
- * 5. Stop run -> POSTs /cancel; button becomes disabled "Stopping…".
+ * 5. Stop run -> POSTs /cancel; button becomes disabled "Stopping…", then
+ *    re-enables if the cancel call fails instead of stranding it disabled.
  * 6. Dismiss (live) -> aborts the follower, clears the pointer, hides;
  *    never hits /cancel.
  * Plus metricsSummary unit cases (integers, floats, duration formatting,
@@ -306,6 +307,36 @@ describe('RunReattachBanner', () => {
       );
     });
     expect(screen.getByText('Stopping…')).toBeDisabled();
+  });
+
+  it('Stop run failure re-enables the button instead of stranding it disabled', async () => {
+    const { api, fetchMock } = makeApi(async (url) => {
+      if (url.startsWith('/api/runs?limit=1')) return json({ runs: [], total: 0 });
+      if (url.includes('/cancel')) return new Response('{"detail":"cancel failed"}', { status: 503 });
+      if (url.includes('/events')) return new Promise<Response>(() => {}); // long poll never resolves
+      if (url === '/api/runs/run-1') return json(runPayload({ status: 'running' }));
+      throw new Error(`unexpected url ${url}`);
+    });
+    writeActiveRun(api, POINTER);
+
+    render(<RunReattachBanner api={api} settings={DEFAULT_SETTINGS} onAskAgent={vi.fn()} />);
+    await screen.findByText('Run in progress (reattached)');
+
+    fireEvent.click(screen.getByText('Stop run'));
+
+    // Assert synchronously, before any `await` yields to the microtask
+    // queue: the mock's /cancel promise resolves immediately (no real
+    // network delay), so an intervening await would let the failure-reset
+    // `.then()` race ahead and flip the button back before this check runs.
+    // `fetchMock` itself records the call synchronously too (the call
+    // expression evaluates before `await` suspends inside cancelRunById).
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/cancel'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(screen.getByText('Stopping…')).toBeDisabled();
+
+    expect(await screen.findByText('Stop run')).not.toBeDisabled();
   });
 
   it('Dismiss (live) clears the pointer and hides without hitting /cancel', async () => {

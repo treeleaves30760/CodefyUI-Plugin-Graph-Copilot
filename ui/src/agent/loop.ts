@@ -774,7 +774,8 @@ async function executeTool(
           return JSON.stringify({
             error: `Run ${previousPointer.runId} is still ${previousRow.status} on the host`
               + `${previousPointer.reason ? ` (${previousPointer.reason})` : ''}. `
-              + 'One run at a time: wait for it, or the user can stop it from the reattach card.',
+              + 'One run at a time: wait for it, or the user can stop it from the reattach card '
+              + '(reopen or reload the panel to see it).',
           });
         }
       }

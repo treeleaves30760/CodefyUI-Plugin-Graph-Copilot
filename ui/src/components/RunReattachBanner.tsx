@@ -114,6 +114,9 @@ export function RunReattachBanner({ api, settings, onAskAgent }: RunReattachBann
 
         const outcome = await followRun(api, {
           runId: pointer.runId,
+          // Resume at the row's last cursor: replaying a long run's whole
+          // event log would hammer the host for state the row already
+          // summarizes.
           fromCursor: row.lastCursor ?? 0,
           signal: controller.signal,
           onUpdate: (update) => {
@@ -165,7 +168,9 @@ export function RunReattachBanner({ api, settings, onAskAgent }: RunReattachBann
   const handleStop = () => {
     if (state.kind !== 'live') return;
     setStopping(true);
-    void cancelRunById(api, state.runId);
+    void cancelRunById(api, state.runId).then((ok) => {
+      if (!ok) setStopping(false);
+    });
   };
 
   const handleDismiss = () => {
