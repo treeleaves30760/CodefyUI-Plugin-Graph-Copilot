@@ -16006,7 +16006,7 @@ async function Ky(a, i, s, o, c, d, f, y = !1) {
         }
         if (k && !os(k.status))
           return JSON.stringify({
-            error: `Run ${v.runId} is still ${k.status} on the host${v.reason ? ` (${v.reason})` : ""}. One run at a time: wait for it, or the user can stop it from the reattach card.`
+            error: `Run ${v.runId} is still ${k.status} on the host${v.reason ? ` (${v.reason})` : ""}. One run at a time: wait for it, or the user can stop it from the reattach card (reopen or reload the panel to see it).`
           });
       }
       oi(i, v.runId);
@@ -17031,6 +17031,9 @@ function SE({ api: a, settings: i, onAskAgent: s }) {
         });
         const U = await C_(a, {
           runId: S.runId,
+          // Resume at the row's last cursor: replaying a long run's whole
+          // event log would hammer the host for state the row already
+          // summarizes.
           fromCursor: E.lastCursor ?? 0,
           signal: A.signal,
           onUpdate: (O) => {
@@ -17064,7 +17067,9 @@ function SE({ api: a, settings: i, onAskAgent: s }) {
     };
   }, [a]);
   const h = () => {
-    o.kind === "live" && (f(!0), T_(a, o.runId));
+    o.kind === "live" && (f(!0), T_(a, o.runId).then((S) => {
+      S || f(!1);
+    }));
   }, b = () => {
     var S;
     o.kind !== "hidden" && (o.kind === "live" && ((S = y.current) == null || S.abort()), oi(a, o.runId), c({ kind: "hidden" }));
